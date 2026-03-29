@@ -3,6 +3,7 @@
 **Mistral-native agent orchestration.**
 Route intelligently. Govern completely. Ship on EU infrastructure.
 
+[![PyPI](https://img.shields.io/pypi/v/tramontane)](https://pypi.org/project/tramontane/)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![EU Sovereign](https://img.shields.io/badge/EU-sovereign-blue)
@@ -17,12 +18,54 @@ Tramontane is an open-source agent orchestration framework built exclusively on 
 ```bash
 pip install tramontane
 export MISTRAL_API_KEY=your_key_here
-tramontane run pipelines/market_research.yaml --input "AI market in France 2026" --budget 0.05
 ```
 
-## Code Example
+### Step 1 -- Verify installation
+
+```bash
+tramontane --version
+tramontane models        # see the full Mistral fleet with EUR pricing
+tramontane init          # create local database + health check
+```
+
+### Step 2 -- Run your first pipeline
+
+```bash
+# Code review pipeline (cheapest -- uses devstral-small)
+tramontane run pipelines/code_review.yaml \
+  --input "def add(a, b): return a + b" \
+  --budget 0.05
+
+# French lead generation (GDPR strict mode)
+tramontane run pipelines/lead_gen_fr.yaml \
+  --input "Trouve des plombiers a Lyon" \
+  --budget 0.05 --gdpr strict
+
+# Market research
+tramontane run pipelines/market_research.yaml \
+  --input "Open source AI frameworks in Europe 2026" \
+  --budget 0.15
+```
+
+### Step 3 -- Start the API server
+
+```bash
+tramontane serve --port 8080
+# Docs at http://localhost:8080/docs
+
+# Health check
+curl http://localhost:8080/health
+
+# Stream a pipeline via SSE
+curl -N -X POST http://localhost:8080/pipelines/run \
+  -H "Content-Type: application/json" \
+  -d '{"pipeline_name":"code_review","input":"def hello(): print(world)","stream":true,"budget_eur":0.05}'
+```
+
+### Step 4 -- Use in Python
 
 ```python
+import asyncio
 from tramontane.core.agent import Agent
 from tramontane.core.pipeline import Pipeline
 
@@ -48,8 +91,12 @@ pipeline = Pipeline(
     agents=[researcher, analyst],
     handoffs=[("Market Researcher", "Data Analyst")],
     budget_eur=0.10,
-    streaming=True,
 )
+
+run = asyncio.run(pipeline.run("AI market in France 2026"))
+print(run.status.value)     # "complete"
+print(f"EUR {run.total_cost_eur:.4f}")
+print(run.output)
 ```
 
 ## Why Tramontane
@@ -64,6 +111,8 @@ pipeline = Pipeline(
 | Local mode (Ollama) | One flag | Complex | Complex | Complex |
 | Pipeline hub | HuggingFace | LangSmith | CrewAI Hub | No |
 | Cost tracking | Per-token EUR | No | No | No |
+| Voice input | Voxtral-Mini | No | No | No |
+| SSE streaming | Built-in | Complex | No | No |
 
 ## The Mistral Fleet
 
@@ -84,12 +133,14 @@ Every prompt is routed to the optimal model automatically:
 
 ## Built-in Pipelines
 
-```bash
-tramontane run pipelines/market_research.yaml --input "..." --budget 0.15
-tramontane run pipelines/lead_gen_fr.yaml --input "..." --budget 0.05 --gdpr strict
-tramontane run pipelines/code_review.yaml --input "..." --budget 0.10
-tramontane run pipelines/document_analysis.yaml --input "..." --budget 0.20 --gdpr strict
-```
+Four battle-tested pipelines included:
+
+| Pipeline | Agents | Typical Cost | GDPR |
+|----------|--------|-------------|------|
+| `code_review` | Reviewer, Security Auditor, Writer | EUR 0.0007 | none |
+| `lead_gen_fr` | Prospector, Qualifier, Copywriter | EUR 0.0013 | strict |
+| `market_research` | Researcher, Analyst, Writer | EUR 0.0100 | standard |
+| `document_analysis` | Extractor, Legal Analyst, Summarizer | EUR 0.0180 | strict |
 
 ## GDPR
 
@@ -103,38 +154,40 @@ Tramontane is GDPR-native, not GDPR-bolted-on:
 - **EU residency**: Mistral AI (Paris) + Scaleway EU-west-1 (Paris) -- data never leaves EU
 - **HTTP 451**: `GDPRViolationError` returns the correct status code
 
-## CLI
+## API Endpoints
 
-```bash
-tramontane run <pipeline.yaml> --input "..." --budget 0.05 --gdpr strict
-tramontane models                  # display the Mistral fleet
-tramontane init                    # create database + verify health
-tramontane audit --run <run_id>    # view audit trail
-tramontane hub search <query>      # browse community pipelines
-tramontane serve --port 8080       # start the API server
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check + DB status |
+| GET | `/models` | List all Mistral models |
+| POST | `/pipelines/run` | Run pipeline (SSE stream or JSON) |
+| GET | `/pipelines/{run_id}` | Get run status + cost |
+| GET | `/pipelines/{run_id}/audit` | Audit log for run |
+| GET | `/runs` | List recent runs |
+| GET | `/docs` | Interactive API docs (Swagger) |
 
-## API Server
-
-```bash
-tramontane serve --port 8080
-# or
-uvicorn tramontane.server.app:create_app --factory --port 8080
-```
-
-All pipeline runs support SSE streaming via `POST /pipelines/run` with `stream: true`.
+All responses include `X-Tramontane-Version` and `X-EU-Sovereign: true` headers.
 
 ## Docker
 
 ```bash
 docker compose up -d
-# API available at http://localhost:8080
+# API at http://localhost:8080
 # Docs at http://localhost:8080/docs
 ```
 
 ## Contributing
 
 Contributions welcome. Please follow the coding rules in `CLAUDE.md`.
+
+```bash
+git clone https://github.com/Jesiel-dev-creator/TRAMONTANE.git
+cd TRAMONTANE
+uv sync
+uv run pytest tests/ -q          # 52 tests
+uv run ruff check .              # lint
+uv run mypy .                    # type check (strict)
+```
 
 ## License
 
