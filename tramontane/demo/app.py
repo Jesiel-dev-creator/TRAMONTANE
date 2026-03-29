@@ -1,7 +1,7 @@
-"""Tramontane Router Demo — Gradio Space.
+"""TRAMONTANE — Mistral Router Demo (HuggingFace Space).
 
-Demonstrates the Mistral model router in OFFLINE mode (no API key needed).
-Deploy to HuggingFace Spaces under BleuCommerce-Apps/tramontane-demo.
+Demonstrates the intelligent model router in OFFLINE mode.
+No API key needed. Zero cold-start dependencies beyond tramontane + gradio.
 """
 
 from __future__ import annotations
@@ -13,78 +13,149 @@ from tramontane.router.classifier import ClassificationMode, TaskClassifier
 from tramontane.router.models import MISTRAL_MODELS
 from tramontane.router.router import MistralRouter
 
+# ---------------------------------------------------------------------------
+# Initialise router in OFFLINE mode (no API key needed on HF Space)
+# ---------------------------------------------------------------------------
 
-def _build_fleet_df() -> pd.DataFrame:
-    """Build the model fleet as a DataFrame."""
+classifier = TaskClassifier(mode=ClassificationMode.OFFLINE)
+router = MistralRouter(classifier=classifier)
+
+
+# ---------------------------------------------------------------------------
+# Model fleet table
+# ---------------------------------------------------------------------------
+
+
+def get_fleet_df() -> pd.DataFrame:
+    """Build the Mistral model fleet as a sorted DataFrame."""
     rows = []
     for alias, m in MISTRAL_MODELS.items():
         rows.append({
             "Model": alias,
             "Tier": m.tier,
-            "Strengths": ", ".join(m.strengths[:3]),
-            "EUR/1M in": f"{m.cost_per_1m_input_eur:.2f}",
-            "EUR/1M out": f"{m.cost_per_1m_output_eur:.2f}",
-            "Local": "ollama" if m.local_ollama else "-",
-            "Modality": m.modality,
+            "Best For": ", ".join(m.strengths[:2]),
+            "\u20ac/1M in": f"\u20ac{m.cost_per_1m_input_eur:.2f}",
+            "\u20ac/1M out": f"\u20ac{m.cost_per_1m_output_eur:.2f}",
+            "Local": "\u2713 ollama" if m.local_ollama else "\u2014",
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows).sort_values("Tier")
 
 
-FLEET_DF = _build_fleet_df()
-
-classifier = TaskClassifier(mode=ClassificationMode.OFFLINE)
-router = MistralRouter()
+# ---------------------------------------------------------------------------
+# Core routing function
+# ---------------------------------------------------------------------------
 
 
 def route_task(
-    task: str, budget: float, locale: str,
-) -> tuple[dict[str, object], str, pd.DataFrame]:
-    """Route a task and return the decision, explanation, and fleet table."""
+    task: str, budget_eur: float, locale: str,
+) -> tuple[str, pd.DataFrame]:
+    """Route a task and return formatted Markdown + fleet table."""
     if not task.strip():
-        return {}, "Please describe a task.", FLEET_DF
+        return "Enter a task description above.", get_fleet_df()
 
-    decision = router.route_sync(task, budget=budget, locale=locale)
-    explanation = MistralRouter.explain(decision)
-
-    decision_dict = {
-        "primary_model": decision.primary_model,
-        "function_calling_model": decision.function_calling_model,
-        "reasoning_model": decision.reasoning_model,
-        "task_type": decision.classification.task_type,
-        "complexity": decision.classification.complexity,
-        "language": decision.classification.language,
-        "estimated_cost_eur": round(decision.estimated_cost_eur, 6),
-        "budget_constrained": decision.budget_constrained,
-        "downgrade_applied": decision.downgrade_applied,
-        "local_mode": decision.local_mode,
-    }
-
-    md = (
-        f"### {explanation}\n\n"
-        f"**Task type:** {decision.classification.task_type} "
-        f"(complexity {decision.classification.complexity}/5)\n\n"
-        f"**Language detected:** {decision.classification.language}\n\n"
-        f"**Estimated cost:** EUR {decision.estimated_cost_eur:.6f}\n\n"
+    decision = router.route_sync(
+        task.strip(), budget=budget_eur, locale=locale,
     )
+    explanation = router.explain(decision)
+
+    downgrade_note = ""
     if decision.downgrade_applied:
-        md += f"**Downgrade:** {decision.downgrade_reason}\n\n"
+        downgrade_note = (
+            f"\n\u26a0\ufe0f **Budget constraint applied** \u2014 "
+            f"{decision.downgrade_reason}\n"
+        )
 
-    return decision_dict, md, FLEET_DF
+    md = f"""
+## Routing Decision
 
+| Field | Value |
+|-------|-------|
+| **Selected Model** | `{decision.primary_model}` |
+| **Estimated Cost** | `\u20ac{decision.estimated_cost_eur:.4f}` |
+| **Task Type** | `{decision.classification.task_type}` |
+| **Complexity** | `{decision.classification.complexity}/5` |
+| **Needs Reasoning** | `{decision.classification.needs_reasoning}` |
+| **Has Code** | `{decision.classification.has_code}` |
+| **Language** | `{decision.classification.language}` |
+| **Function Calling Model** | `{decision.function_calling_model}` |
+| **Reasoning Model** | `{decision.reasoning_model}` |
+| **Budget Constrained** | `{decision.budget_constrained}` |
+| **Downgrade Applied** | `{decision.downgrade_applied}` |
+
+### Explanation
+
+> {explanation}
+{downgrade_note}
+---
+*Router running in OFFLINE mode \u00b7 No API key required*
+"""
+    return md.strip(), get_fleet_df()
+
+
+# ---------------------------------------------------------------------------
+# Example tasks
+# ---------------------------------------------------------------------------
+
+EXAMPLES = [
+    ["Write a Python function to parse JSON and handle errors", 0.05, "en"],
+    ["Analyze the impact of the EU AI Act on French SMEs", 0.10, "fr"],
+    ["Search for the latest Mistral AI news", 0.02, "en"],
+    ["List all EU member states", 0.005, "en"],
+    ["Build a full-stack Next.js app with Supabase auth", 0.20, "en"],
+    [
+        "R\u00e9dige un email de prospection en fran\u00e7ais pour une PME",
+        0.05, "fr",
+    ],
+]
+
+
+# ---------------------------------------------------------------------------
+# EU Premium CSS
+# ---------------------------------------------------------------------------
 
 CSS = """
-.gradio-container { font-family: 'DM Sans', sans-serif; }
-h1, h2, h3 { font-family: 'Syne', sans-serif; }
-.primary-btn { background: #00D4EE !important; }
-footer { font-size: 0.85em; color: #4A6480; }
+.gradio-container {
+    max-width: 1000px !important;
+    font-family: 'DM Sans', sans-serif !important;
+}
+.gr-button-primary {
+    background: #00D4EE !important;
+    border: none !important;
+    color: #020408 !important;
+    font-weight: 700 !important;
+}
+footer { display: none !important; }
 """
 
-with gr.Blocks(theme=gr.themes.Base(primary_hue="cyan"), css=CSS) as demo:
-    gr.Markdown(
-        "# TRAMONTANE — Mistral Router Demo\n"
-        "See which Mistral model gets selected for your task. "
-        "No API key needed — runs in OFFLINE classifier mode."
-    )
+
+# ---------------------------------------------------------------------------
+# Gradio UI
+# ---------------------------------------------------------------------------
+
+with gr.Blocks(
+    title="TRAMONTANE \u2014 Mistral Router Demo",
+    theme=gr.themes.Base(
+        primary_hue="cyan",
+        neutral_hue="slate",
+    ).set(
+        body_background_fill="#020408",
+        body_text_color="#DCE9F5",
+        block_background_fill="#0D1B2A",
+        block_border_color="#1C2E42",
+        input_background_fill="#060C14",
+    ),
+    css=CSS,
+) as demo:
+
+    gr.Markdown("""
+# TRAMONTANE
+### Mistral-native agent orchestration \u00b7 Model Router Demo
+
+See which Mistral model gets automatically selected for your task.
+The router picks the **optimal model** \u2014 balancing capability, cost, and your budget.
+
+---
+""")
 
     with gr.Row():
         with gr.Column(scale=2):
@@ -95,33 +166,54 @@ with gr.Blocks(theme=gr.themes.Base(primary_hue="cyan"), css=CSS) as demo:
             )
             with gr.Row():
                 budget_slider = gr.Slider(
-                    0.001, 0.50, value=0.05, step=0.001,
-                    label="Budget (EUR)",
+                    minimum=0.001,
+                    maximum=0.50,
+                    value=0.05,
+                    step=0.001,
+                    label="Budget ceiling (\u20ac)",
                 )
-                locale_dropdown = gr.Dropdown(
-                    ["en", "fr", "de", "es", "it"], value="en",
+                locale_drop = gr.Dropdown(
+                    choices=["en", "fr", "de", "es", "it", "pt"],
+                    value="en",
                     label="Locale",
                 )
-            route_btn = gr.Button("Route", variant="primary")
+            route_btn = gr.Button("Route Task", variant="primary")
 
         with gr.Column(scale=3):
-            decision_json = gr.JSON(label="Routing Decision")
-            explanation_md = gr.Markdown(label="Explanation")
+            result_md = gr.Markdown(
+                value="*Enter a task above to see the routing decision.*",
+            )
 
-    fleet_table = gr.DataFrame(label="Mistral Model Fleet", value=FLEET_DF)
+    gr.Markdown("### Try These Examples")
+    gr.Examples(
+        examples=EXAMPLES,
+        inputs=[task_input, budget_slider, locale_drop],
+        label=None,
+    )
+
+    gr.Markdown("### Mistral Model Fleet")
+    fleet_table = gr.Dataframe(
+        value=get_fleet_df(),
+        interactive=False,
+        wrap=True,
+    )
+
+    gr.Markdown("""
+---
+**TRAMONTANE** \u00b7 MIT License \u00b7
+[GitHub](https://github.com/Jesiel-dev-creator/TRAMONTANE) \u00b7
+Built in Orl\u00e9ans, France by **Bleucommerce SAS**
+""")
 
     route_btn.click(
         fn=route_task,
-        inputs=[task_input, budget_slider, locale_dropdown],
-        outputs=[decision_json, explanation_md, fleet_table],
+        inputs=[task_input, budget_slider, locale_drop],
+        outputs=[result_md, fleet_table],
     )
-
-    gr.Markdown(
-        "---\n"
-        "Built with **Tramontane v0.1.0** · "
-        "[GitHub](https://github.com/bleucommerce/tramontane) · "
-        "Mistral-native agent orchestration · "
-        "Made in Orleans, France by Bleucommerce SAS"
+    task_input.submit(
+        fn=route_task,
+        inputs=[task_input, budget_slider, locale_drop],
+        outputs=[result_md, fleet_table],
     )
 
 if __name__ == "__main__":
