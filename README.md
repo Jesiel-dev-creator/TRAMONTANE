@@ -16,7 +16,7 @@ Tramontane is an open-source agent orchestration framework built exclusively on 
 
 ```bash
 pip install tramontane
-export MISTRAL_API_KEY=sk-...
+export MISTRAL_API_KEY=your_key_here
 tramontane run pipelines/market_research.yaml --input "AI market in France 2026" --budget 0.05
 ```
 
