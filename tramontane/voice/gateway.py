@@ -1,14 +1,12 @@
 """Voxtral-Mini voice input gateway.
 
-Uses voxtral-mini-latest for speech-to-text transcription.
-Tier 1 pricing at EUR 0.04/1M tokens — cheap enough for all pipelines.
-Supports wav, mp3, ogg, m4a input formats.
+Uses the Mistral Audio Transcriptions API (client.audio.transcriptions)
+with voxtral-mini-latest. Supports wav, mp3, ogg, m4a, flac, webm.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 from pathlib import Path
@@ -32,8 +30,9 @@ class VoiceInput(BaseModel):
 
 
 class VoiceGateway:
-    """Transcribes audio to text using Voxtral-Mini.
+    """Transcribes audio to text using the Mistral Audio Transcriptions API.
 
+    Uses ``client.audio.transcriptions.complete()`` with voxtral-mini-latest.
     Lazy-creates the Mistral client on first use.
     """
 
@@ -55,10 +54,7 @@ class VoiceGateway:
         return self._client
 
     async def transcribe_file(self, audio_path: str) -> VoiceInput:
-        """Transcribe an audio file to text.
-
-        Reads the file, base64-encodes it, and sends to Voxtral-Mini.
-        """
+        """Transcribe an audio file to text via the Audio Transcriptions API."""
         path = Path(audio_path)
         if path.suffix.lower() not in _SUPPORTED_FORMATS:
             msg = (
@@ -68,9 +64,8 @@ class VoiceGateway:
             raise ValueError(msg)
 
         audio_bytes = path.read_bytes()
-        return await self.transcribe_bytes(
-            audio_bytes, format=path.suffix.lstrip("."),
-        )
+        file_name = path.name
+        return await self._transcribe(audio_bytes, file_name)
 
     async def transcribe_bytes(
         self,
@@ -78,44 +73,45 @@ class VoiceGateway:
         format: str = "wav",
     ) -> VoiceInput:
         """Transcribe raw audio bytes to text."""
-        client = self._get_client()
-        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+        file_name = f"audio.{format}"
+        return await self._transcribe(audio_bytes, file_name)
 
-        # Estimate duration from file size (rough: wav ~176KB/s at 44.1kHz)
-        estimated_duration = len(audio_bytes) / 176_000
+    async def _transcribe(
+        self,
+        audio_bytes: bytes,
+        file_name: str,
+    ) -> VoiceInput:
+        """Core transcription using client.audio.transcriptions."""
+        client = self._get_client()
+
+        # Estimate duration (rough: wav ~32KB/s at 16kHz mono 16-bit)
+        estimated_duration = max(0.1, len(audio_bytes) / 32_000)
+
+        # Language param: None if auto, else pass the code
+        lang_param = None if self._language == "auto" else self._language
 
         try:
-            response = await client.chat.complete_async(
+            # Use the dedicated Audio Transcriptions API
+            response = await client.audio.transcriptions.complete_async(
                 model="voxtral-mini-latest",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "audio_url",
-                                "audio_url": f"data:audio/{format};base64,{audio_b64}",
-                            },
-                            {
-                                "type": "text",
-                                "text": "Transcribe this audio exactly.",
-                            },
-                        ],
-                    },
-                ],
+                file={
+                    "content": audio_bytes,
+                    "file_name": file_name,
+                },
+                language=lang_param,
             )
 
-            transcript = str(response.choices[0].message.content or "")
-            tokens_used = 0
-            if hasattr(response, "usage") and response.usage:
-                tokens_used = (
-                    getattr(response.usage, "total_tokens", 0)
-                )
-            cost = (tokens_used / 1_000_000) * 0.04
+            transcript = response.text or ""
 
-            # Detect language from response if auto
+            # Detect language if auto
             detected_lang = self._language
             if detected_lang == "auto":
                 detected_lang = self._detect_language_hint(transcript)
+
+            # Estimate cost (Voxtral is Tier 1: EUR 0.04/1M tokens)
+            # Rough estimate: ~1 token per 4 chars of transcript
+            est_tokens = len(transcript) // 4
+            cost = (est_tokens / 1_000_000) * 0.04
 
             logger.info(
                 "Transcribed %.1fs audio -> '%s...'",
