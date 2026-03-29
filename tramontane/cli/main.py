@@ -401,13 +401,18 @@ def hub(
 @app.command()
 def serve(
     port: int = typer.Option(8080, help="Port to listen on"),
+    host: str = typer.Option("0.0.0.0", help="Host to bind to"),
+    multitenancy: bool = typer.Option(False, help="Enable multitenancy"),
 ) -> None:
     """Start the Tramontane API server."""
+    import uvicorn
+
+    from tramontane.server.app import create_app
+
+    _show_banner()
     console.print(
-        Panel(
-            f"[bold {_FROST}]Server coming in Phase 5[/]\n"
-            f"[{_STORM}]Will launch FastAPI on port {port}[/]",
-            border_style=f"dim {_RIM}",
-            padding=(0, 2),
-        )
+        f"  [{_CYAN}]Starting server on {host}:{port}[/]\n"
+        f"  [{_STORM}]Docs at http://{host}:{port}/docs[/]\n"
     )
+    fastapi_app = create_app(multitenancy=multitenancy)
+    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
