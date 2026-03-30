@@ -10,3 +10,16 @@ __license__ = "MIT"
 
 # Library best practice: let the user configure logging.
 logging.getLogger("tramontane").addHandler(logging.NullHandler())
+
+# Public API — convenience imports (after logging setup intentionally)
+from tramontane.core.agent import Agent, AgentResult  # noqa: E402
+from tramontane.core.pipeline import Pipeline  # noqa: E402
+from tramontane.router.router import MistralRouter  # noqa: E402
+
+__all__ = [
+    "Agent",
+    "AgentResult",
+    "Pipeline",
+    "MistralRouter",
+    "__version__",
+]
