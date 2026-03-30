@@ -36,7 +36,7 @@ class HubPipeline(BaseModel):
     description: str
     tags: list[str] = Field(default_factory=list)
     models_used: list[str] = Field(default_factory=list)
-    version: str = "0.1.3"
+    version: str = "0.1.4"
     downloads: int = 0
     likes: int = 0
     hf_url: str = ""

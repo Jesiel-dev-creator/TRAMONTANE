@@ -96,7 +96,7 @@ class MCPAdapter:
                     "capabilities": {},
                     "clientInfo": {
                         "name": "tramontane",
-                        "version": "0.1.3",
+                        "version": "0.1.4",
                     },
                 },
                 "id": 1,
