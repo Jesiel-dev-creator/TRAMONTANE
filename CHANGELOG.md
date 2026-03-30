@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.1.3 (2026-03-30)
+
+### Hardened
+- **Mutable default fix** -- 7 Pydantic fields across 6 files changed from
+  `= []` / `= {}` to `Field(default_factory=...)`. Prevents cross-instance
+  state contamination.
+- **Dead code removal** -- Removed unused PrivateAttrs (_run_count,
+  _conversation_id, _mistral_agent_id) from Agent. Agent is now fully stateless.
+- **Exception handling** -- Zero bare `except:` clauses. All catches use
+  specific exceptions with logging.
+- **Edge case validation** -- Agent.run() validates: empty input, negative
+  budget, missing API key. All raise with clear error messages.
+- **SQLite async safety** -- `check_same_thread=False` on all 4 SQLite
+  connections (longterm, pipeline, workflow, audit).
+- **Retry logic** -- Exponential backoff on all Mistral API calls
+  (2^attempt, capped 30s, max_retry_limit attempts).
+- **Logging** -- NullHandler on root logger (library best practice).
+  Zero print() in library code.
+
+### Added
+- 5 new tests (61 total): empty input, whitespace, negative budget,
+  missing API key, run_sync bridge.
+- 3 working examples: quickstart.py, pipeline_code_review.py, budget_routing.py
+- Full README rewrite with comparison table, working quick start,
+  router explanation, model fleet.
+- PyPI metadata: classifiers (Beta), keywords, project URLs, Bug Tracker.
+- CLAUDE.md updated to match v0.1.2+ architecture.
+
 ## v0.1.2 (2026-03-30)
 
 ### Fixed

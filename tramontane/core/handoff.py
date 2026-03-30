@@ -11,7 +11,7 @@ import logging
 from collections import defaultdict
 from typing import Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tramontane.core.exceptions import (
     BudgetExceededError,
@@ -47,7 +47,7 @@ class HandoffEvent(BaseModel):
     conversation_id: str
     timestamp: datetime.datetime
     budget_remaining_eur: float | None = None
-    metadata: dict[str, object] = {}
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

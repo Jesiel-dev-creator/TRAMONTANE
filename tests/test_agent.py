@@ -98,6 +98,50 @@ class TestMistralParams:
         assert "instructions" in params
 
 
+class TestRunValidation:
+    """Agent.run() input validation (no API key needed)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_input_raises(self, sample_agent: Agent) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            await sample_agent.run("")
+
+    @pytest.mark.asyncio
+    async def test_whitespace_input_raises(self, sample_agent: Agent) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            await sample_agent.run("   ")
+
+    def test_negative_budget_raises(self) -> None:
+        a = Agent(
+            role="R", goal="G", backstory="B", budget_eur=-1.0,
+        )
+        with pytest.raises(ValueError, match="budget_eur must be >= 0"):
+            from tramontane.core._sync import run_sync
+
+            run_sync(a.run("test"))
+
+    @pytest.mark.asyncio
+    async def test_missing_api_key_raises(self, sample_agent: Agent) -> None:
+        import os
+
+        original = os.environ.pop("MISTRAL_API_KEY", None)
+        try:
+            with pytest.raises(RuntimeError, match="MISTRAL_API_KEY"):
+                await sample_agent.run("test prompt")
+        finally:
+            if original:
+                os.environ["MISTRAL_API_KEY"] = original
+
+    def test_run_sync_works(self) -> None:
+        """Verify run_sync helper works from sync context."""
+        from tramontane.core._sync import run_sync
+        from tramontane.router.classifier import ClassificationMode, TaskClassifier
+
+        c = TaskClassifier(mode=ClassificationMode.OFFLINE)
+        result = run_sync(c.classify("write code"))
+        assert result.task_type == "code"
+
+
 class TestFromYaml:
     """YAML loading."""
 

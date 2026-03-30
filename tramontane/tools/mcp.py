@@ -16,7 +16,7 @@ import logging
 import os
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tramontane.tools.registry import ToolCategory, TramontaneTool, registry
 
@@ -37,7 +37,7 @@ class MCPServerConfig(BaseModel):
     transport: MCPTransport
     command: list[str] | None = None
     url: str | None = None
-    env: dict[str, str] = {}
+    env: dict[str, str] = Field(default_factory=dict)
     description: str = ""
 
 
@@ -96,7 +96,7 @@ class MCPAdapter:
                     "capabilities": {},
                     "clientInfo": {
                         "name": "tramontane",
-                        "version": "0.1.2",
+                        "version": "0.1.3",
                     },
                 },
                 "id": 1,

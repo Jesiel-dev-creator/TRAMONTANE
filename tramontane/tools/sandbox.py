@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import time
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class SandboxResult(BaseModel):
     exit_code: int
     execution_time_ms: float
     mode_used: SandboxMode
-    files_created: list[str] = []
+    files_created: list[str] = Field(default_factory=list)
 
 
 def _docker_available() -> bool:

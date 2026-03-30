@@ -67,6 +67,7 @@ async def health(request: Request) -> HealthResponse:
         mem = LongTermMemory(db_path=db_path)
         mem._get_db()
     except Exception:
+        logger.warning("Health check: database error", exc_info=True)
         db_status = "error"
 
     return HealthResponse(

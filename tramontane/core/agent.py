@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field
 
 from tramontane.core.exceptions import AgentTimeoutError, BudgetExceededError
 from tramontane.router.models import MISTRAL_MODELS, MistralModel, get_model
@@ -62,7 +62,7 @@ class Agent(BaseModel):
     locale: str = "en"
 
     # ── TOOLS ────────────────────────────────────────────────────────
-    tools: list[Any] = []
+    tools: list[Any] = Field(default_factory=list)
     allow_code_execution: bool = False
     code_execution_mode: Literal["safe", "unsafe"] = "safe"
 
@@ -98,9 +98,8 @@ class Agent(BaseModel):
     step_callback: Callable[..., Any] | None = None
 
     # ── PRIVATE STATE ────────────────────────────────────────────────
-    _mistral_agent_id: str | None = PrivateAttr(default=None)
-    _conversation_id: str | None = PrivateAttr(default=None)
-    _run_count: int = PrivateAttr(default=0)
+    # (v0.1.2: removed _cost_tracker, _mistral_agent_id, _conversation_id,
+    #  _run_count — all unused. Agent is stateless by design.)
 
     # ── COST METHODS ─────────────────────────────────────────────────
     # Agent is STATELESS on cost. It reports per-call cost in AgentResult.
@@ -215,10 +214,18 @@ class Agent(BaseModel):
             BudgetExceededError: If estimated cost exceeds remaining budget.
             AgentTimeoutError: If max_execution_time is exceeded.
         """
+        import anyio
         from mistralai.client import Mistral
 
+        # -- Input validation --
+        if not input_text or not input_text.strip():
+            msg = f"Agent '{self.role}': input_text must be a non-empty string"
+            raise ValueError(msg)
+        if self.budget_eur is not None and self.budget_eur < 0:
+            msg = f"Agent '{self.role}': budget_eur must be >= 0, got {self.budget_eur}"
+            raise ValueError(msg)
+
         rid = run_id or uuid.uuid4().hex[:12]
-        self._run_count += 1
 
         # 1. Resolve model
         model_alias = self.model
@@ -247,28 +254,49 @@ class Agent(BaseModel):
             est_cost = self._estimate_call_cost(messages, model_info)
             self.check_budget(est_cost, spent_eur=spent_eur)
 
-        # 4. Call Mistral
+        # 4. Call Mistral with retry + exponential backoff
         api_key = os.environ.get("MISTRAL_API_KEY")
+        if not api_key:
+            msg = "MISTRAL_API_KEY environment variable is not set"
+            raise RuntimeError(msg)
+
         client = Mistral(api_key=api_key)
         start_time = time.monotonic()
+        max_retries = self.max_retry_limit
+        response: Any = None
 
-        try:
-            coro = client.chat.complete_async(
-                model=api_model,
-                messages=messages,  # type: ignore[arg-type]
-            )
-            if self.max_execution_time:
-                response = await asyncio.wait_for(
-                    coro, timeout=float(self.max_execution_time),
+        for attempt in range(max_retries + 1):
+            try:
+                coro = client.chat.complete_async(
+                    model=api_model,
+                    messages=messages,  # type: ignore[arg-type]
                 )
-            else:
-                response = await coro
+                if self.max_execution_time:
+                    response = await asyncio.wait_for(
+                        coro, timeout=float(self.max_execution_time),
+                    )
+                else:
+                    response = await coro
+                break  # success
 
-        except asyncio.TimeoutError:
-            raise AgentTimeoutError(
-                agent_role=self.role,
-                timeout_seconds=self.max_execution_time or 0,
-            )
+            except asyncio.TimeoutError:
+                raise AgentTimeoutError(
+                    agent_role=self.role,
+                    timeout_seconds=self.max_execution_time or 0,
+                )
+            except Exception as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "[%s] Mistral API failed after %d attempts: %s",
+                        rid, attempt + 1, exc,
+                    )
+                    raise
+                wait = min(2 ** attempt, 30)
+                logger.warning(
+                    "[%s] Mistral API error (attempt %d/%d): %s — retrying in %ds",
+                    rid, attempt + 1, max_retries + 1, exc, wait,
+                )
+                await anyio.sleep(wait)
 
         duration = time.monotonic() - start_time
 

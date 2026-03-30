@@ -5,21 +5,22 @@
 
 ---
 
-## 🌬️ What This Project Is
+## What This Project Is
 
 **TRAMONTANE** is an open-source, Mistral-native agent orchestration framework.
 It is to the Mistral ecosystem what LangGraph is to OpenAI — except built
 *from* Mistral's own primitives outward, not bolted on top.
 
-**Owner:** Jesiel · Bleucommerce SAS · Orléans, France 🇫🇷
+**Owner:** Jesiel · Bleucommerce SAS · Orleans, France
 **License:** MIT (core) · Open-core commercial (TramontaneOS Pro)
 **Stack:** Python 3.12+ · uv · Pydantic v2 · FastAPI · Typer · Rich · asyncio
 **Models:** Mistral fleet only — no OpenAI, no LangChain, no LiteLLM ever
 **Infra:** Hetzner VPS (dev) · Scaleway EU-west-1 Paris (prod) · GDPR-native
+**Version:** 0.1.3 (published on PyPI, GitHub, HuggingFace)
 
 ---
 
-## 🏗️ Three-Layer Architecture
+## Three-Layer Architecture
 
 ```
 Layer 1 → SDK          pip install tramontane
@@ -27,23 +28,24 @@ Layer 2 → Runtime      Router · Executor · Memory · GDPR
 Layer 3 → TramontaneOS  Production API · Dashboard · Hub
 ```
 
-We build Layer 1 + 2 first. Layer 3 after.
+Layers 1 + 2 are complete. Layer 3 is v0.2+.
 
 ---
 
-## 📁 Exact Repo Structure
+## Exact Repo Structure
 
 ```
 tramontane/
 ├── tramontane/
 │   ├── __init__.py
 │   ├── core/
-│   │   ├── agent.py          ← BUILD FIRST
+│   │   ├── agent.py          ← Agent class + AgentResult + run()
 │   │   ├── pipeline.py
 │   │   ├── workflow.py
 │   │   ├── handoff.py
 │   │   ├── conversation.py
-│   │   └── exceptions.py
+│   │   ├── exceptions.py
+│   │   └── _sync.py          ← run_sync() bridge for sync callers
 │   ├── router/
 │   │   ├── classifier.py
 │   │   ├── router.py
@@ -71,20 +73,28 @@ tramontane/
 │   │   └── publisher.py
 │   ├── cli/
 │   │   └── main.py
-│   └── server/
-│       ├── app.py
-│       ├── routes.py
-│       └── streaming.py
+│   ├── server/
+│   │   ├── app.py
+│   │   ├── routes.py
+│   │   └── streaming.py
+│   └── demo/
+│       └── app.py            ← HF Space Gradio demo
 ├── pipelines/
 │   ├── lead_gen_fr.yaml
 │   ├── market_research.yaml
 │   ├── code_review.yaml
 │   └── document_analysis.yaml
 ├── tests/
-├── examples/
-├── docs/
+│   ├── conftest.py
+│   ├── test_agent.py
+│   ├── test_router.py
+│   ├── test_pipeline.py
+│   ├── test_gdpr.py
+│   └── live_validation.py    ← 6 real API integration tests
+├── mistral_cookbook/
 ├── pyproject.toml
 ├── README.md
+├── CHANGELOG.md
 ├── .env.example
 ├── Dockerfile
 └── docker-compose.yml
@@ -92,26 +102,26 @@ tramontane/
 
 ---
 
-## 🤖 The Mistral Model Fleet (Router Targets)
+## The Mistral Model Fleet (Router Targets)
 
-| Alias | API ID | Tier | Best For | Cost/1M |
+| Alias | API ID | Tier | Best For | Cost/1M in/out |
 |---|---|---|---|---|
-| `ministral-3b` | ministral-3b-latest | 0 | Classification, PII, triage | €0.04 |
-| `ministral-7b` | ministral-8b-latest | 1 | Bulk, extraction, tool calls | €0.10 |
-| `mistral-small` | mistral-small-latest | 2 | General, multilingual | €0.10/0.30 |
-| `devstral-small` | devstral-small-2505 | 2 | ALL code tasks, SWE | €0.10/0.30 |
-| `magistral-small` | magistral-small-latest | 3 | Reasoning, CoT, planning | €0.50/1.50 |
-| `magistral-medium` | magistral-medium-latest | 3 | Deep reasoning | €2.00/5.00 |
-| `devstral-2` | devstral-latest | 4 | Complex SWE, monorepo | €0.50/1.50 |
-| `pixtral-large` | pixtral-large-latest | 4 | Vision, multimodal, OCR | €2.00/6.00 |
-| `mistral-large` | mistral-large-latest | 4 | Frontier, synthesis | €2.00/6.00 |
-| `voxtral-mini` | voxtral-mini-latest | 1 | Voice input transcription | €0.04 |
+| `ministral-3b` | ministral-3b-latest | 0 | Classification, PII, triage | 0.04/0.04 |
+| `ministral-7b` | ministral-8b-latest | 1 | Bulk, extraction, tool calls | 0.10/0.10 |
+| `mistral-small` | mistral-small-latest | 2 | General, multilingual | 0.10/0.30 |
+| `devstral-small` | devstral-small-latest | 2 | ALL code tasks, SWE | 0.10/0.30 |
+| `magistral-small` | magistral-small-latest | 3 | Reasoning, CoT, planning | 0.50/1.50 |
+| `magistral-medium` | magistral-medium-latest | 3 | Deep reasoning | 2.00/5.00 |
+| `devstral-2` | devstral-latest | 4 | Complex SWE, monorepo | 0.50/1.50 |
+| `pixtral-large` | pixtral-large-latest | 4 | Vision, multimodal, OCR | 2.00/6.00 |
+| `mistral-large` | mistral-large-latest | 4 | Frontier, synthesis | 2.00/6.00 |
+| `voxtral-mini` | voxtral-mini-latest | 1 | Voice input transcription | 0.04/0.04 |
 
 **RULE: model="auto" → router decides. Never hardcode expensive models.**
 
 ---
 
-## ⚙️ Router Decision Logic
+## Router Decision Logic
 
 ```
 has_vision?           → pixtral-large
@@ -125,16 +135,32 @@ task=bulk/complexity=1 → ministral-7b
 task=research+complexity>=3 → mistral-large
 default               → mistral-small
 
-budget constraint?    → downgrade to next cheaper that fits
+budget constraint?    → downgrade to next cheaper that fits quality floor
 locale=fr/de/es/it?   → prefer multilingual-strong models
 --local flag?         → map all to Ollama equivalents
 ```
 
 **Function calling always routes to ministral-7b unless reasoning required.**
 
+### Budget Quality Floors (added v0.1.2)
+
+When budget forces a downgrade, the router enforces minimum model quality:
+
+| Task Type | Floor Model | Never Below |
+|-----------|-------------|-------------|
+| reasoning | magistral-small | tier 3 |
+| code | devstral-small | tier 2 |
+| vision | pixtral-large | tier 4 |
+| general | mistral-small | tier 2 |
+| bulk | ministral-7b | tier 1 |
+| classification | ministral-3b | tier 0 |
+
+If budget can't afford the floor → BudgetExceededError (loud failure).
+Never silently downgrade to a model that can't do the job.
+
 ---
 
-## 🔑 Core Agent Class (implement exactly)
+## Core Agent Class
 
 ```python
 class Agent(BaseModel):
@@ -186,9 +212,69 @@ class Agent(BaseModel):
     step_callback: Optional[Callable] = None
 ```
 
+### Agent.run() (added v0.1.2)
+
+The single execution entry-point. Pipeline calls this; Agent owns the
+full lifecycle of a single LLM call.
+
+```python
+async def run(
+    self,
+    input_text: str,
+    *,
+    router: MistralRouter | None = None,
+    conversation_history: list[dict] | None = None,
+    run_id: str | None = None,
+    spent_eur: float = 0.0,
+) -> AgentResult:
+```
+
+Returns `AgentResult(output, model_used, input_tokens, output_tokens,
+cost_eur, duration_seconds, tool_calls, reasoning_used)`.
+
+Steps: validate input → resolve model → build messages → estimate cost
+→ check budget → call Mistral with retry → extract output → calculate
+actual cost → return AgentResult.
+
 ---
 
-## 🔧 Pipeline Modes
+## Async Architecture (updated v0.1.2)
+
+The library is async-first. All public methods are `async def`.
+
+For sync callers, `tramontane.core._sync.run_sync()` provides a bridge:
+- Detects whether an event loop is already running
+- If yes: uses `anyio.from_thread.run()` to bridge
+- If no: uses `asyncio.run()` as fallback
+
+`asyncio.run()` appears ONLY in:
+- `cli/main.py` (top-level entry point — correct)
+- `core/_sync.py` (fallback when no loop running — correct)
+
+NEVER use `asyncio.run()` in library internals. Always `await`.
+
+---
+
+## Cost Tracking Architecture (updated v0.1.2)
+
+Single source of truth: **Pipeline accumulates, Agent reports.**
+
+Flow:
+1. Pipeline calls `agent.run(spent_eur=run.total_cost_eur)`
+2. Agent estimates cost BEFORE API call: `_estimate_call_cost()`
+   - Char-based token estimation (~3.5 chars/token)
+   - 1.4x multiplier if reasoning=True
+   - Compares estimate against (budget_eur - spent_eur)
+3. Agent calls Mistral API with exponential backoff retry
+4. Agent calculates ACTUAL cost from response.usage token counts
+5. Agent returns cost_eur in AgentResult
+6. Pipeline sums AgentResult.cost_eur into run.total_cost_eur
+
+Agent has NO internal cost state. No _total_cost. No accumulator.
+
+---
+
+## Pipeline Modes
 
 **AGENTIC mode** — Mistral Handoffs API, non-deterministic
 - Use `handoff_execution="client"` to intercept every handoff
@@ -209,9 +295,9 @@ class Agent(BaseModel):
 
 ---
 
-## 🛡️ 7 Failure Mode Guards (from HF paper 2503.13657)
+## 7 Failure Mode Guards (from HF paper 2503.13657)
 
-Build these into pipeline executor:
+Built into pipeline executor:
 
 1. `MAX_HANDOFF_DEPTH = 10` → raise HandoffLoopError
 2. Circular handoff detection → same agent_id twice = error
@@ -223,7 +309,7 @@ Build these into pipeline executor:
 
 ---
 
-## 🗄️ Memory Schema (SQLite + FTS5)
+## Memory Schema (SQLite + FTS5)
 
 ```sql
 -- Main memory table
@@ -277,7 +363,7 @@ CREATE TABLE tramontane_audit (
 
 ---
 
-## 💻 CLI Commands to Implement
+## CLI Commands
 
 ```
 tramontane run <pipeline> [--input TEXT] [--file PATH]
@@ -292,22 +378,23 @@ tramontane hub install <org/name>
 tramontane hub publish <yaml> --name <org/name>
 tramontane audit [--pipeline NAME] [--export article30]
 tramontane models
+tramontane init
 ```
 
 ---
 
-## 📦 Dependencies
+## Dependencies
 
 ```toml
 [project]
 name = "tramontane"
-version = "0.1.0"
+version = "0.1.3"
 requires-python = ">=3.12"
 
 dependencies = [
     "mistralai>=1.0.0",
     "pydantic>=2.0.0",
-    "typer[all]>=0.12.0",
+    "typer>=0.12.0",
     "rich>=13.0.0",
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.29.0",
@@ -315,6 +402,7 @@ dependencies = [
     "httpx>=0.27.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
+    "huggingface-hub>=0.20.0",
 ]
 
 [project.optional-dependencies]
@@ -322,6 +410,7 @@ redis   = ["redis>=5.0.0"]
 postgres = ["asyncpg>=0.29.0", "pgvector>=0.2.0"]
 voice   = ["sounddevice>=0.4.0", "numpy>=1.26.0"]
 sandbox = ["e2b>=0.17.0"]
+hub     = ["huggingface-hub>=0.20.0"]
 
 [dependency-groups]
 dev = [
@@ -330,14 +419,15 @@ dev = [
     "respx>=0.21.0",
     "ruff>=0.4.0",
     "mypy>=1.9.0",
+    "types-pyyaml",
 ]
 ```
 
 ---
 
-## 🔨 Build Order (strict — do not skip steps)
+## Build Order
 
-### Phase 1 — Foundation
+### Phase 1 — Foundation COMPLETE
 1. `pyproject.toml` + `tramontane/__init__.py`
 2. `tramontane/core/exceptions.py`
 3. `tramontane/router/models.py` + `rules.yaml`
@@ -345,13 +435,13 @@ dev = [
 5. `tramontane/router/classifier.py`
 6. `tramontane/router/router.py`
 
-### Phase 2 — Pipeline Engine
+### Phase 2 — Pipeline Engine COMPLETE
 7. `tramontane/core/handoff.py`
 8. `tramontane/core/conversation.py`
 9. `tramontane/core/pipeline.py`
 10. `tramontane/core/workflow.py`
 
-### Phase 3 — Memory + GDPR
+### Phase 3 — Memory + GDPR COMPLETE
 11. `tramontane/memory/schema.sql` + `longterm.py`
 12. `tramontane/memory/conversation.py` + `pipeline.py`
 13. `tramontane/gdpr/pii.py`
@@ -359,25 +449,25 @@ dev = [
 15. `tramontane/gdpr/middleware.py`
 16. `tramontane/gdpr/reports.py`
 
-### Phase 4 — Tools + Voice
+### Phase 4 — Tools + Voice COMPLETE
 17. `tramontane/tools/registry.py` + `builtin.py`
 18. `tramontane/tools/mcp.py` + `sandbox.py`
 19. `tramontane/voice/gateway.py`
 
-### Phase 5 — CLI + Server
+### Phase 5 — CLI + Server COMPLETE
 20. `tramontane/cli/main.py`
 21. `tramontane/server/app.py` + `routes.py` + `streaming.py`
 
-### Phase 6 — Hub + Tests + Pipelines
+### Phase 6 — Hub + Tests + Pipelines COMPLETE
 22. `tramontane/hub/client.py` + `publisher.py`
-23. All 5 example files
-24. All 5 test files
+23. All example files
+24. All test files + live_validation.py
 25. Built-in pipeline YAMLs
 26. `Dockerfile` + `docker-compose.yml`
 
 ---
 
-## 📐 Coding Rules (never break these)
+## Coding Rules (never break these)
 
 1. **NEVER** import langchain, liteLLM, openai. Mistral-native only.
 2. **ALWAYS** async/await for all Mistral API calls.
@@ -401,10 +491,19 @@ dev = [
 12. After each phase: `uv run ruff check . && uv run mypy .` must pass.
 13. **NO** print() statements — use Rich console or Python logging.
 14. **NO** hardcoded API keys — always `os.environ["MISTRAL_API_KEY"]`.
+15. **NEVER** use `asyncio.run()` in library code. Only in CLI entry points.
+16. **ALWAYS** use `anyio.sleep()` for async delays, not `asyncio.sleep()`.
+17. **SQLite** connections must use `check_same_thread=False` for async safety.
+18. **Logging**: use `logging.getLogger(__name__)` — never `print()`.
+    Library root logger has NullHandler (user configures their own).
+19. **Retries**: all Mistral API calls use exponential backoff
+    (2^attempt, capped at 30s, max_retry_limit attempts).
+20. **Agent is stateless on cost.** Never accumulate cost in Agent.
+    Return per-call cost in AgentResult. Pipeline accumulates.
 
 ---
 
-## 🌍 Frameworks We Studied (use their patterns where noted)
+## Frameworks We Studied (use their patterns where noted)
 
 | Framework | Pattern to Use | Pattern to Avoid |
 |---|---|---|
@@ -416,7 +515,7 @@ dev = [
 
 ---
 
-## 🎯 What We're Ultimately Building
+## What We're Ultimately Building
 
 Tramontane is the foundation. On top of it:
 
@@ -438,7 +537,7 @@ The live preview / streaming is the Lovable feeling. It works because
 
 ---
 
-## 🔗 Key External Resources
+## Key External Resources
 
 - Mistral Agents API docs: https://docs.mistral.ai/agents/introduction
 - Mistral Handoffs: https://docs.mistral.ai/agents/handoffs
@@ -451,40 +550,49 @@ The live preview / streaming is the Lovable feeling. It works because
 
 ---
 
-## 🚦 Current Status
+## Current Status
 
-**Phase 1 — NOT STARTED**
+**v0.1.3 — RELEASED on PyPI, GitHub, HuggingFace** (2026-03-30)
 
-Next action: Run environment check, scaffold repo, begin Phase 1.
-
-```bash
-# First thing to run:
-python3 --version   # needs 3.12+
-node --version      # needs 20+
-uv --version        # needs installed
-docker --version    # needs installed
-
-# Then:
-uv init tramontane
-cd tramontane
-uv add mistralai pydantic "typer[all]" rich fastapi "uvicorn[standard]" \
-    anyio httpx pyyaml python-dotenv
-uv add --dev pytest pytest-asyncio respx ruff mypy
-```
+- PyPI: https://pypi.org/project/tramontane/0.1.3/
+- GitHub: https://github.com/Jesiel-dev-creator/TRAMONTANE
+- HF Space: https://huggingface.co/spaces/BleuCommerce-Apps/TRAMONTANE-demo
+- HF Pipelines: https://hf.co/datasets/BleuCommerce-Apps/tramontane-pipelines
 
 ---
 
-## 🔑 Environment Variables Needed
+## Codebase Audit Results (v0.1.3)
+
+Completed 2026-03-30. All findings fixed.
+
+| Check | Result |
+|-------|--------|
+| Bare `except:` clauses | 0 remaining |
+| `print()` in library code | 0 remaining (Rich console only) |
+| `check_same_thread=False` on SQLite | 4/4 connections |
+| NullHandler on root logger | Configured |
+| Exponential backoff on API calls | In Agent.run() |
+| Edge case validation (empty input, neg budget, missing key) | Tested |
+| asyncio.run() in library internals | 0 remaining |
+| Unit tests | 61/61 passing |
+| Live API integration tests | 6/6 passing |
+| ruff | Clean |
+| mypy --strict | Clean |
+
+---
+
+## Environment Variables
 
 ```bash
 # .env (never commit this file)
-MISTRAL_API_KEY=sk-...          # required
-TRAMONTANE_ENV=development      # development | production
-TRAMONTANE_DB=tramontane.db     # SQLite path
+MISTRAL_API_KEY=your_mistral_api_key_here   # required
+TRAMONTANE_ENV=development                   # development | production
+TRAMONTANE_DB=tramontane.db                  # SQLite path
 TRAMONTANE_LOG_LEVEL=INFO
-TRAMONTANE_BUDGET_DEFAULT=0.10  # default pipeline budget in EUR
+TRAMONTANE_BUDGET_DEFAULT=0.10               # default pipeline budget in EUR
 
 # Optional
+HF_TOKEN=hf_...                              # for hub push/pull
 REDIS_URL=redis://localhost:6379
-SCALEWAY_REGION=fr-par          # for EU deployment
+SCALEWAY_REGION=fr-par                       # for EU deployment
 ```

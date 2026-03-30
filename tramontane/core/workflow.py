@@ -156,7 +156,7 @@ class Workflow:
     def _get_db(self) -> sqlite3.Connection:
         """Return (and cache) the checkpoint SQLite connection."""
         if self._db is None:
-            self._db = sqlite3.connect(self._db_path)
+            self._db = sqlite3.connect(self._db_path, check_same_thread=False)
             self._db.execute(_WORKFLOW_CHECKPOINT_SCHEMA)
             self._db.commit()
         return self._db

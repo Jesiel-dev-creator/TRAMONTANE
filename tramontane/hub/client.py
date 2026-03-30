@@ -10,7 +10,7 @@ import logging
 import os
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -34,9 +34,9 @@ class HubPipeline(BaseModel):
     name: str
     author: str
     description: str
-    tags: list[str] = []
-    models_used: list[str] = []
-    version: str = "0.1.2"
+    tags: list[str] = Field(default_factory=list)
+    models_used: list[str] = Field(default_factory=list)
+    version: str = "0.1.3"
     downloads: int = 0
     likes: int = 0
     hf_url: str = ""
@@ -133,6 +133,7 @@ class HubClient:
                 hf_url=f"https://hf.co/datasets/{ds.id}",
             )
         except Exception:
+            logger.warning("Failed to get info for %s", name, exc_info=True)
             return None
 
     def display_search_results(self, results: list[HubPipeline]) -> None:
