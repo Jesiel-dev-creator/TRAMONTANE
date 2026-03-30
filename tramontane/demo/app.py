@@ -309,6 +309,8 @@ label {
     letter-spacing: 0.8px !important;
 }
 footer { display: none !important; }
+.chatbot { overflow-y: auto !important; scrollbar-width: none !important; }
+.chatbot::-webkit-scrollbar { display: none !important; }
 """
 
 
