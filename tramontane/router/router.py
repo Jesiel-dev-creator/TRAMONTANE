@@ -6,7 +6,6 @@ complexity, budget, locale, and local-mode constraints.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
+from tramontane.core.exceptions import BudgetExceededError
 from tramontane.router.classifier import (
     ClassificationResult,
     TaskClassifier,
@@ -30,6 +30,20 @@ _DEFAULT_RULES_PATH = Path(__file__).parent / "rules.yaml"
 
 # Locale codes that benefit from strong multilingual models
 _MULTILINGUAL_LOCALES: set[str] = {"fr", "de", "es", "it", "pt"}
+
+# Minimum quality floors per task type.
+# Budget downgrade NEVER goes below these — failing loudly is better
+# than silently serving garbage from an incapable model.
+_QUALITY_FLOORS: dict[str, str] = {
+    "reasoning": "magistral-small",
+    "code": "devstral-small",
+    "vision": "pixtral-large",
+    "research": "mistral-small",
+    "creative": "mistral-small",
+    "analysis": "mistral-small",
+    "general": "mistral-small",
+    "bulk": "ministral-7b",
+}
 
 
 class RoutingDecision(BaseModel):
@@ -115,8 +129,10 @@ class MistralRouter:
                 budget_constrained = True
                 primary, downgrade_applied, downgrade_reason = (
                     self._apply_budget_downgrade(
-                        agent_budget_eur,
-                        classification.estimated_output_tokens,
+                        budget_eur=agent_budget_eur,
+                        est_output_tokens=classification.estimated_output_tokens,
+                        task_type=classification.task_type,
+                        needs_reasoning=classification.needs_reasoning,
                     )
                 )
 
@@ -169,8 +185,10 @@ class MistralRouter:
         context: str | None = None,
         force_model: str | None = None,
     ) -> RoutingDecision:
-        """Synchronous wrapper for route()."""
-        return asyncio.run(
+        """Synchronous wrapper for route(). Do not call from async context."""
+        from tramontane.core._sync import run_sync
+
+        return run_sync(
             self.route(
                 prompt,
                 agent_budget_eur=budget,
@@ -239,29 +257,63 @@ class MistralRouter:
         self,
         budget_eur: float,
         est_output_tokens: int,
+        task_type: str,
+        needs_reasoning: bool,
     ) -> tuple[str, bool, str]:
-        """Try budget downgrade order, returning (model, applied, reason)."""
-        order: list[str] = (
-            self._rules.get("budget", {}).get("downgrade_order", [])
-        )
-        for alias in order:
-            try:
-                model_info = get_model(alias)
-            except Exception:
-                continue
-            cost = self._estimate_cost(model_info, est_output_tokens)
-            if cost <= budget_eur:
-                return (
-                    alias,
-                    True,
-                    f"budget: EUR {budget_eur:.4f} limit",
+        """Downgrade model for budget, but never below quality floor.
+
+        Uses _QUALITY_FLOORS to prevent serving an incapable model.
+        Raises BudgetExceededError if budget is insufficient even for
+        the minimum quality model.
+        """
+        # Determine the floor for this task
+        effective_type = task_type
+        if needs_reasoning and effective_type not in ("code", "vision"):
+            effective_type = "reasoning"
+        floor_alias = _QUALITY_FLOORS.get(effective_type, "mistral-small")
+        floor_info = MISTRAL_MODELS.get(floor_alias)
+        floor_tier = floor_info.tier if floor_info else 0
+
+        # Check if even the floor model fits the budget
+        if floor_info:
+            floor_cost = self._estimate_cost(floor_info, est_output_tokens)
+            if floor_cost > budget_eur:
+                raise BudgetExceededError(
+                    budget_eur=budget_eur,
+                    spent_eur=0.0,
+                    pipeline_name=(
+                        f"budget EUR {budget_eur:.4f} insufficient for "
+                        f"minimum quality model '{floor_alias}' "
+                        f"(estimated EUR {floor_cost:.4f}, "
+                        f"task type '{task_type}' requires tier >= {floor_tier})"
+                    ),
                 )
 
-        # Absolute floor: ministral-3b
+        # Find cheapest model that meets BOTH budget AND quality floor
+        candidates: list[tuple[float, str]] = []
+        for alias, model in MISTRAL_MODELS.items():
+            if not model.available or model.tier < floor_tier:
+                continue
+            cost = self._estimate_cost(model, est_output_tokens)
+            if cost <= budget_eur:
+                candidates.append((cost, alias))
+
+        if not candidates:
+            raise BudgetExceededError(
+                budget_eur=budget_eur,
+                spent_eur=0.0,
+                pipeline_name=(
+                    f"no model with tier >= {floor_tier} fits "
+                    f"budget EUR {budget_eur:.4f} for task type '{task_type}'"
+                ),
+            )
+
+        candidates.sort()
+        chosen = candidates[0][1]
         return (
-            "ministral-3b",
+            chosen,
             True,
-            f"budget: EUR {budget_eur:.4f} limit (floor)",
+            f"budget: EUR {budget_eur:.4f} limit (floor: {floor_alias})",
         )
 
     def _resolve_fc_model(self, cls_result: ClassificationResult) -> str:

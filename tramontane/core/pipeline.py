@@ -7,7 +7,6 @@ Implements all 7 failure-mode guards from CLAUDE.md.
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import enum
 import json
@@ -20,10 +19,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from tramontane.core.agent import Agent
-from tramontane.core.conversation import ConversationManager
+from tramontane.core.agent import Agent, AgentResult
 from tramontane.core.exceptions import (
-    AgentTimeoutError,
     BudgetExceededError,
     PipelineValidationError,
 )
@@ -156,8 +153,7 @@ class Pipeline:
         # Router (lightweight — no API key needed)
         self._router = MistralRouter()
 
-        # Lazy-init fields (populated on run)
-        self._conversation_mgr: ConversationManager | None = None
+        # Lazy-init fields
         self._db: sqlite3.Connection | None = None
 
     @property
@@ -174,15 +170,6 @@ class Pipeline:
             self._db.execute(_CHECKPOINT_SCHEMA)
             self._db.commit()
         return self._db
-
-    def _get_conversation_mgr(self) -> ConversationManager:
-        """Return (and cache) the ConversationManager."""
-        if self._conversation_mgr is None:
-            self._conversation_mgr = ConversationManager(
-                store_on_cloud=(self.gdpr_level == "none"),
-                gdpr_level=self.gdpr_level,
-            )
-        return self._conversation_mgr
 
     # -- Main execution ----------------------------------------------------
 
@@ -211,7 +198,6 @@ class Pipeline:
             graph=self.handoff_graph,
             budget_tracker=budget_tracker,
         )
-        conv_mgr = self._get_conversation_mgr()
 
         # Find entry agent (no incoming edges)
         entry_roles = self.handoff_graph.entry_roles()
@@ -239,80 +225,42 @@ class Pipeline:
                     )
                 visited_ids.append(current_role)
 
-                # Route the agent
-                decision = await self._router.route(
-                    prompt=current_output,
-                    agent_budget_eur=agent.budget_eur,
-                    locale=agent.locale or self.locale,
-                )
-
-                # Guard 7: budget check BEFORE call
+                # Guard 7: pipeline-level budget check BEFORE call
                 if self.budget_eur is not None:
                     total_spent = sum(budget_tracker.values())
-                    if (
-                        total_spent + decision.estimated_cost_eur
-                        > self.budget_eur
-                    ):
+                    # Rough pre-estimate using cheapest possible cost
+                    if total_spent > self.budget_eur:
                         run.status = PipelineStatus.BUDGET_EXCEEDED
                         run.output = current_output
                         break
 
-                # Resolve model for this agent
-                model_api_id = decision.primary_model
-                from tramontane.router.models import MISTRAL_MODELS
+                # Agent.run() handles: model resolution, budget check,
+                # Mistral API call, timeout, cost calculation.
+                # Pipeline passes spent_eur so Agent can check budget.
+                result: AgentResult = await agent.run(
+                    current_output,
+                    router=self._router,
+                    run_id=run.run_id,
+                    spent_eur=run.total_cost_eur,
+                )
+                current_output = result.output
 
-                model_info = MISTRAL_MODELS.get(model_api_id)
-                api_model = model_info.api_id if model_info else model_api_id
-                agent_id = agent._mistral_agent_id or uuid.uuid4().hex
-
-                # Each agent gets a fresh conversation with its own
-                # system prompt passed as instructions.
-                async def _run_agent() -> str:
-                    conv_id = await conv_mgr.start(
-                        agent_id=agent_id,
-                        agent_role=current_role,
-                        first_message=current_output,
-                        model=api_model,
-                        instructions=agent.system_prompt(),
-                        handoff_execution="client",
-                    )
-                    # start() already returns the model's response
-                    history = conv_mgr.get_history(conv_id)
-                    if history:
-                        return history[-1].content
-                    return ""
-
-                # Guard 5: timeout
-                timeout = agent.max_execution_time
-                if timeout:
-                    try:
-                        current_output = await asyncio.wait_for(
-                            _run_agent(),
-                            timeout=float(timeout),
-                        )
-                    except asyncio.TimeoutError:
-                        raise AgentTimeoutError(
-                            agent_role=current_role,
-                            timeout_seconds=timeout,
-                        )
-                else:
-                    current_output = await _run_agent()
-
-                # Guard 6: empty output retry
+                # Guard 6: empty output
                 if not current_output.strip():
                     current_output = "[Empty output from agent]"
 
-                # Track costs
-                cost = decision.estimated_cost_eur
+                # Track costs from AgentResult
                 budget_tracker[current_role] = (
-                    budget_tracker.get(current_role, 0.0) + cost
+                    budget_tracker.get(current_role, 0.0) + result.cost_eur
                 )
-                run.total_cost_eur += cost
+                run.total_cost_eur += result.cost_eur
                 run.agents_used.append(current_role)
-                run.models_used.append(decision.primary_model)
+                run.models_used.append(result.model_used)
 
                 # Checkpoint
-                self._checkpoint(run.run_id, step, current_role, current_output, cost)
+                self._checkpoint(
+                    run.run_id, step, current_role, current_output, result.cost_eur,
+                )
                 step += 1
                 run.checkpoint_step = step
 

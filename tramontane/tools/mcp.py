@@ -96,7 +96,7 @@ class MCPAdapter:
                     "capabilities": {},
                     "clientInfo": {
                         "name": "tramontane",
-                        "version": "0.1.0",
+                        "version": "0.1.2",
                     },
                 },
                 "id": 1,
@@ -190,8 +190,10 @@ class MCPAdapter:
     def connect_sync(
         self, config: MCPServerConfig,
     ) -> list[TramontaneTool]:
-        """Synchronous wrapper for connect()."""
-        return asyncio.run(self.connect(config))
+        """Synchronous wrapper for connect(). Do not call from async context."""
+        from tramontane.core._sync import run_sync
+
+        return run_sync(self.connect(config))
 
     # -- Known server configs ----------------------------------------------
 

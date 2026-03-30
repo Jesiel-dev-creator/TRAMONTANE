@@ -6,7 +6,6 @@ officers. Rich CLI output follows the EU Premium design system.
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import json
 import logging
@@ -108,7 +107,9 @@ class GDPRReporter:
         since: datetime.datetime | None = None,
     ) -> dict[str, Any]:
         """Synchronous wrapper for article_30_report()."""
-        return asyncio.run(self.article_30_report(pipeline_name, since))
+        from tramontane.core._sync import run_sync
+
+        return run_sync(self.article_30_report(pipeline_name, since))
 
     # -- Erasure report ----------------------------------------------------
 

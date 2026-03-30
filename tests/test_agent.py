@@ -62,10 +62,11 @@ class TestSystemPrompt:
 class TestCostControl:
     """Budget checking and cost estimation."""
 
-    def test_estimate_cost_known_model(self, sample_agent: Agent) -> None:
-        cost = sample_agent.estimate_cost(1000, 500, "mistral-small")
-        assert cost > 0
-        assert isinstance(cost, float)
+    def test_estimate_cost_known_model(self) -> None:
+        cost = Agent.estimate_cost(1000, 500, "mistral-small")
+        # mistral-small: €0.10/1M in + €0.30/1M out
+        expected = (1000 / 1e6) * 0.10 + (500 / 1e6) * 0.30
+        assert abs(cost - expected) < 1e-9
 
     def test_check_budget_under_limit(self, budget_agent: Agent) -> None:
         budget_agent.check_budget(0.0005)  # Should not raise
@@ -74,21 +75,18 @@ class TestCostControl:
         with pytest.raises(BudgetExceededError):
             budget_agent.check_budget(0.002)
 
-    def test_register_cost_accumulates(self, budget_agent: Agent) -> None:
-        budget_agent.register_cost(0.0003)
-        budget_agent.register_cost(0.0003)
-        remaining = budget_agent.remaining_budget()
-        assert remaining is not None
-        assert remaining < 0.001
+    def test_check_budget_with_spent(self, budget_agent: Agent) -> None:
+        # budget_eur=0.001, already spent 0.0008 → 0.0003 more should fail
+        with pytest.raises(BudgetExceededError):
+            budget_agent.check_budget(0.0003, spent_eur=0.0008)
 
-    def test_remaining_budget_none_when_no_budget(self, sample_agent: Agent) -> None:
-        assert sample_agent.remaining_budget() is None
+    def test_check_budget_with_spent_under_limit(self, budget_agent: Agent) -> None:
+        # budget_eur=0.001, spent 0.0005, estimating 0.0003 → total 0.0008 < 0.001
+        budget_agent.check_budget(0.0003, spent_eur=0.0005)  # Should not raise
 
-    def test_remaining_budget_decrements(self, budget_agent: Agent) -> None:
-        budget_agent.register_cost(0.0005)
-        remaining = budget_agent.remaining_budget()
-        assert remaining is not None
-        assert abs(remaining - 0.0005) < 1e-9
+    def test_no_budget_check_passes(self, sample_agent: Agent) -> None:
+        # No budget_eur set → check always passes
+        sample_agent.check_budget(999.0, spent_eur=999.0)
 
 
 class TestMistralParams:

@@ -6,7 +6,6 @@ with voxtral-mini-latest. Supports wav, mp3, ogg, m4a, flac, webm.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from pathlib import Path
@@ -139,7 +138,9 @@ class VoiceGateway:
 
     def transcribe_file_sync(self, audio_path: str) -> VoiceInput:
         """Synchronous wrapper for transcribe_file()."""
-        return asyncio.run(self.transcribe_file(audio_path))
+        from tramontane.core._sync import run_sync
+
+        return run_sync(self.transcribe_file(audio_path))
 
     def is_available(self) -> bool:
         """Check if voice transcription is available."""

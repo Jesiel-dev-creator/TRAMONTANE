@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from tramontane.core.exceptions import BudgetExceededError
 from tramontane.router.classifier import ClassificationMode, TaskClassifier
 from tramontane.router.router import MistralRouter
 
@@ -53,12 +56,62 @@ class TestRouter:
         assert d.primary_model in ("devstral-2", "devstral-small")
 
     def test_budget_downgrades_model(self, offline_router: MistralRouter) -> None:
-        d = offline_router.route_sync(
-            "analyze the EU AI Act implications on enterprise SaaS",
-            budget=0.0000001,
-        )
-        assert d.downgrade_applied is True
+        # Long reasoning prompt → routes to expensive model, then downgrades
+        # Budget sufficient for floor but not the ideal model
+        prompt = "Analyze step by step why " * 50 + "the EU AI Act matters"
+        d = offline_router.route_sync(prompt, budget=0.005)
         assert d.budget_constrained is True
+        assert d.downgrade_applied is True
+        # Must be tier >= 3 (reasoning floor) — never ministral-3b/7b
+        from tramontane.router.models import MISTRAL_MODELS
+
+        model = MISTRAL_MODELS.get(d.primary_model)
+        assert model is not None
+        assert model.tier >= 3
+
+    def test_budget_too_low_raises_error(self, offline_router: MistralRouter) -> None:
+        # Budget so low that even the floor model can't fit
+        with pytest.raises(BudgetExceededError):
+            offline_router.route_sync(
+                "analyze the EU AI Act implications",
+                budget=0.0000000001,
+            )
+
+    def test_reasoning_floor_never_below_magistral(
+        self, offline_router: MistralRouter,
+    ) -> None:
+        # Reasoning task with tight budget should get magistral-small or above
+        d = offline_router.route_sync(
+            "explain why quantum computing breaks RSA encryption step by step",
+            budget=0.001,
+        )
+        if d.downgrade_applied:
+            from tramontane.router.models import MISTRAL_MODELS
+
+            model = MISTRAL_MODELS.get(d.primary_model)
+            assert model is not None
+            assert model.tier >= 2  # magistral-small is tier 3
+
+    def test_code_floor_never_below_devstral(
+        self, offline_router: MistralRouter,
+    ) -> None:
+        # Code task with tight budget should stay at devstral-small or above
+        d = offline_router.route_sync(
+            "write a Python function to merge sort a linked list",
+            budget=0.001,
+        )
+        if d.downgrade_applied:
+            from tramontane.router.models import MISTRAL_MODELS
+
+            model = MISTRAL_MODELS.get(d.primary_model)
+            assert model is not None
+            assert model.tier >= 2
+
+    def test_no_budget_no_change(self, offline_router: MistralRouter) -> None:
+        # No budget = no downgrade, regression test
+        d = offline_router.route_sync("write a function")
+        assert d.downgrade_applied is False
+        assert d.budget_constrained is False
 
     def test_french_locale_prefers_multilingual(
         self, offline_router: MistralRouter,

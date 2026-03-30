@@ -2,19 +2,42 @@
 
 Every agent wraps a Mistral model call with identity (role/goal/backstory),
 budget control, GDPR awareness, and automatic model routing.
+
+The ``run()`` method is the single execution entry-point:
+resolve model → check budget → call Mistral → track cost → return AgentResult.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime
+import logging
+import os
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from tramontane.core.exceptions import BudgetExceededError
-from tramontane.router.models import get_model
+from tramontane.core.exceptions import AgentTimeoutError, BudgetExceededError
+from tramontane.router.models import MISTRAL_MODELS, MistralModel, get_model
+
+logger = logging.getLogger(__name__)
+
+
+class AgentResult(BaseModel):
+    """Result returned by Agent.run()."""
+
+    output: str
+    model_used: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_eur: float = 0.0
+    duration_seconds: float = 0.0
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    reasoning_used: bool = False
 
 
 class Agent(BaseModel):
@@ -77,45 +100,43 @@ class Agent(BaseModel):
     # ── PRIVATE STATE ────────────────────────────────────────────────
     _mistral_agent_id: str | None = PrivateAttr(default=None)
     _conversation_id: str | None = PrivateAttr(default=None)
-    _cost_tracker: float = PrivateAttr(default=0.0)
     _run_count: int = PrivateAttr(default=0)
 
     # ── COST METHODS ─────────────────────────────────────────────────
+    # Agent is STATELESS on cost. It reports per-call cost in AgentResult.
+    # Pipeline is the single source of truth for accumulated cost.
 
+    @staticmethod
     def estimate_cost(
-        self,
         input_tokens: int,
         output_tokens: int,
         model_alias: str,
     ) -> float:
-        """Estimate the EUR cost for a call given token counts and model alias."""
+        """Calculate EUR cost from real token counts and model pricing."""
         model_info = get_model(model_alias)
         return (
             (input_tokens / 1_000_000) * model_info.cost_per_1m_input_eur
             + (output_tokens / 1_000_000) * model_info.cost_per_1m_output_eur
         )
 
-    def check_budget(self, estimated_cost: float) -> None:
-        """Raise BudgetExceededError if adding estimated_cost would exceed the budget."""
+    def check_budget(
+        self,
+        estimated_cost: float,
+        spent_eur: float = 0.0,
+    ) -> None:
+        """Raise BudgetExceededError if estimated_cost would exceed budget.
+
+        Args:
+            estimated_cost: The projected cost of the next call.
+            spent_eur: Total already spent (passed by Pipeline).
+        """
         if self.budget_eur is not None:
-            projected = self._cost_tracker + estimated_cost
-            if projected > self.budget_eur:
+            if spent_eur + estimated_cost > self.budget_eur:
                 raise BudgetExceededError(
                     budget_eur=self.budget_eur,
-                    spent_eur=self._cost_tracker,
+                    spent_eur=spent_eur,
                     pipeline_name=self.role,
                 )
-
-    def remaining_budget(self) -> float | None:
-        """Return remaining budget in EUR, or None if no budget is set."""
-        if self.budget_eur is None:
-            return None
-        return self.budget_eur - self._cost_tracker
-
-    def register_cost(self, cost_eur: float) -> None:
-        """Record a cost and check whether budget is now exceeded."""
-        self._cost_tracker += cost_eur
-        self.check_budget(0.0)
 
     # ── PROMPT BUILDING ──────────────────────────────────────────────
 
@@ -162,6 +183,160 @@ class Agent(BaseModel):
             params["timeout"] = self.max_execution_time
 
         return params
+
+    # ── EXECUTION ────────────────────────────────────────────────────
+
+    async def run(
+        self,
+        input_text: str,
+        *,
+        router: Any | None = None,
+        conversation_history: list[dict[str, str]] | None = None,
+        run_id: str | None = None,
+        spent_eur: float = 0.0,
+    ) -> AgentResult:
+        """Execute this agent: resolve model, call Mistral, return result.
+
+        Agent is stateless on cost. It calculates per-call cost from real
+        API token counts and returns it in AgentResult. Pipeline is the
+        single source of truth for accumulated cost.
+
+        Args:
+            input_text: The user/handoff message to process.
+            router: Optional MistralRouter for model="auto" resolution.
+            conversation_history: Prior messages to include as context.
+            run_id: Trace identifier (generated if not provided).
+            spent_eur: Total already spent by Pipeline (for budget check).
+
+        Returns:
+            AgentResult with output, model, tokens, cost, duration.
+
+        Raises:
+            BudgetExceededError: If estimated cost exceeds remaining budget.
+            AgentTimeoutError: If max_execution_time is exceeded.
+        """
+        from mistralai.client import Mistral
+
+        rid = run_id or uuid.uuid4().hex[:12]
+        self._run_count += 1
+
+        # 1. Resolve model
+        model_alias = self.model
+        routing_decision = None
+        if model_alias == "auto" and router is not None:
+            routing_decision = await router.route(
+                prompt=input_text,
+                agent_budget_eur=self.budget_eur,
+                locale=self.locale,
+            )
+            model_alias = routing_decision.primary_model
+
+        model_info = MISTRAL_MODELS.get(model_alias)
+        api_model = model_info.api_id if model_info else model_alias
+
+        # 2. Build messages
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self.system_prompt()},
+        ]
+        if conversation_history:
+            messages.extend(conversation_history)
+        messages.append({"role": "user", "content": input_text})
+
+        # 3. Pre-call budget check with improved estimation
+        if model_info:
+            est_cost = self._estimate_call_cost(messages, model_info)
+            self.check_budget(est_cost, spent_eur=spent_eur)
+
+        # 4. Call Mistral
+        api_key = os.environ.get("MISTRAL_API_KEY")
+        client = Mistral(api_key=api_key)
+        start_time = time.monotonic()
+
+        try:
+            coro = client.chat.complete_async(
+                model=api_model,
+                messages=messages,  # type: ignore[arg-type]
+            )
+            if self.max_execution_time:
+                response = await asyncio.wait_for(
+                    coro, timeout=float(self.max_execution_time),
+                )
+            else:
+                response = await coro
+
+        except asyncio.TimeoutError:
+            raise AgentTimeoutError(
+                agent_role=self.role,
+                timeout_seconds=self.max_execution_time or 0,
+            )
+
+        duration = time.monotonic() - start_time
+
+        # 5. Extract output
+        choice = response.choices[0]
+        output_text = str(choice.message.content or "")
+        tool_calls: list[dict[str, Any]] = []
+        if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
+            tool_calls = [
+                {"name": tc.function.name, "arguments": tc.function.arguments}
+                for tc in choice.message.tool_calls
+            ]
+
+        # 6. Actual cost from real API token counts
+        input_tokens = 0
+        output_tokens = 0
+        if hasattr(response, "usage") and response.usage:
+            input_tokens = getattr(response.usage, "prompt_tokens", 0) or 0
+            output_tokens = getattr(response.usage, "completion_tokens", 0) or 0
+
+        actual_cost = 0.0
+        if model_info:
+            actual_cost = (
+                (input_tokens / 1_000_000) * model_info.cost_per_1m_input_eur
+                + (output_tokens / 1_000_000) * model_info.cost_per_1m_output_eur
+            )
+
+        logger.debug(
+            "[%s] agent=%s model=%s tokens=%d/%d cost=EUR %.6f dur=%.2fs",
+            rid, self.role, model_alias, input_tokens, output_tokens,
+            actual_cost, duration,
+        )
+
+        return AgentResult(
+            output=output_text,
+            model_used=model_alias,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_eur=actual_cost,
+            duration_seconds=round(duration, 3),
+            tool_calls=tool_calls,
+            reasoning_used=self.reasoning,
+        )
+
+    def _estimate_call_cost(
+        self,
+        messages: list[dict[str, str]],
+        model_info: MistralModel,
+    ) -> float:
+        """Estimate cost BEFORE making the API call.
+
+        Uses character-based token estimation (~3.5 chars/token) plus
+        output multiplier based on task type.
+        """
+        # Input tokens: ~3.5 chars per token for mixed en/fr
+        total_chars = sum(len(m["content"]) for m in messages)
+        est_input_tokens = total_chars / 3.5
+
+        # Output estimate: 2x input for reasoning, 1.5x otherwise
+        output_multiplier = 2.0 if self.reasoning else 1.5
+        est_output_tokens = est_input_tokens * output_multiplier
+
+        input_cost = (est_input_tokens / 1_000_000) * model_info.cost_per_1m_input_eur
+        output_cost = (est_output_tokens / 1_000_000) * model_info.cost_per_1m_output_eur
+
+        # Reasoning models use more tokens (1.4x overhead)
+        reasoning_overhead = 1.4 if self.reasoning else 1.0
+        return (input_cost + output_cost) * reasoning_overhead
 
     # ── YAML LOADING ─────────────────────────────────────────────────
 

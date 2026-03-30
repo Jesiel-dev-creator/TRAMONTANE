@@ -7,7 +7,6 @@ when MISTRAL_API_KEY is not set — tests and CI never need a key.
 
 from __future__ import annotations
 
-import asyncio
 import enum
 import json
 import logging
@@ -330,5 +329,7 @@ class TaskClassifier:
         prompt: str,
         context: str | None = None,
     ) -> ClassificationResult:
-        """Synchronous wrapper for classify()."""
-        return asyncio.run(self.classify(prompt, context))
+        """Synchronous wrapper for classify(). Do not call from async context."""
+        from tramontane.core._sync import run_sync
+
+        return run_sync(self.classify(prompt, context))

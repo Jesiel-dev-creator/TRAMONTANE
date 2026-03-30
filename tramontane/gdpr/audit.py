@@ -6,7 +6,6 @@ Rich CLI output follows the EU Premium / Night Authority design system.
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import json
 import logging
@@ -174,8 +173,10 @@ class AuditVault:
         pii_redacted: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> AuditEntry:
-        """Synchronous wrapper for log()."""
-        return asyncio.run(
+        """Synchronous wrapper for log(). Do not call from async context."""
+        from tramontane.core._sync import run_sync
+
+        return run_sync(
             self.log(
                 run_id=run_id,
                 pipeline_name=pipeline_name,
@@ -249,7 +250,9 @@ class AuditVault:
 
     def display_run(self, run_id: str) -> None:
         """Display run audit as a Rich table — EU Premium style."""
-        entries = asyncio.run(self.get_run(run_id))
+        from tramontane.core._sync import run_sync
+
+        entries = run_sync(self.get_run(run_id))
         if not entries:
             _console.print(f"[{_STORM}]No audit entries for run {run_id}[/]")
             return
@@ -294,7 +297,9 @@ class AuditVault:
 
     def display_cost_breakdown(self, run_id: str) -> None:
         """Display per-model cost breakdown — EU Premium style."""
-        costs = asyncio.run(self.cost_by_model(run_id))
+        from tramontane.core._sync import run_sync
+
+        costs = run_sync(self.cost_by_model(run_id))
         if not costs:
             _console.print(f"[{_STORM}]No cost data for run {run_id}[/]")
             return

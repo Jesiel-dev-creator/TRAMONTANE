@@ -7,7 +7,6 @@ ONLINE: Ministral-3B for contextual PII that regex misses.
 
 from __future__ import annotations
 
-import asyncio
 import enum
 import json
 import logging
@@ -309,5 +308,7 @@ class PIIDetector:
     # -- Sync wrapper ------------------------------------------------------
 
     def detect_sync(self, text: str) -> PIIResult:
-        """Synchronous wrapper for detect()."""
-        return asyncio.run(self.detect(text))
+        """Synchronous wrapper for detect(). Do not call from async context."""
+        from tramontane.core._sync import run_sync
+
+        return run_sync(self.detect(text))
