@@ -131,3 +131,65 @@ class TestRouter:
         r = MistralRouter(local_mode=True)
         d = r.route_sync("write code")
         assert d.local_mode is True
+
+
+class TestTaskTypeValidation:
+    """Classifier task type validation and normalization."""
+
+    def test_validate_known_type(self) -> None:
+        from tramontane.router.classifier import _validate_task_type
+
+        assert _validate_task_type("code") == "code"
+        assert _validate_task_type("general") == "general"
+        assert _validate_task_type("vision") == "vision"
+
+    def test_validate_alias_design(self) -> None:
+        from tramontane.router.classifier import _validate_task_type
+
+        assert _validate_task_type("design") == "general"
+
+    def test_validate_alias_analysis(self) -> None:
+        from tramontane.router.classifier import _validate_task_type
+
+        assert _validate_task_type("analysis") == "reasoning"
+
+    def test_validate_alias_coding(self) -> None:
+        from tramontane.router.classifier import _validate_task_type
+
+        assert _validate_task_type("coding") == "code"
+        assert _validate_task_type("programming") == "code"
+
+    def test_validate_alias_creative(self) -> None:
+        from tramontane.router.classifier import _validate_task_type
+
+        assert _validate_task_type("creative") == "general"
+
+    def test_validate_unknown_defaults_to_general(self) -> None:
+        from tramontane.router.classifier import _validate_task_type
+
+        assert _validate_task_type("foobar") == "general"
+        assert _validate_task_type("") == "general"
+
+    def test_validate_case_insensitive(self) -> None:
+        from tramontane.router.classifier import _validate_task_type
+
+        assert _validate_task_type("CODE") == "code"
+        assert _validate_task_type("Design") == "general"
+
+    def test_design_prompt_offline_returns_valid_type(
+        self, offline_classifier: TaskClassifier,
+    ) -> None:
+        """A 'design' prompt must return a valid router task type."""
+        from tramontane.router.classifier import VALID_TASK_TYPES
+
+        r = offline_classifier.classify_sync("design a modern landing page for my SaaS")
+        assert r.task_type in VALID_TASK_TYPES
+
+    def test_creative_prompt_offline_returns_general(
+        self, offline_classifier: TaskClassifier,
+    ) -> None:
+        """Creative prompts should map to 'general', not 'creative'."""
+        r = offline_classifier.classify_sync(
+            "compose a poem about the ocean, draft a narrative for the essay"
+        )
+        assert r.task_type == "general"

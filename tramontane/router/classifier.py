@@ -24,8 +24,48 @@ logger = logging.getLogger(__name__)
 
 TaskType = Literal[
     "code", "reasoning", "research", "vision",
-    "bulk", "creative", "analysis", "general",
+    "bulk", "general", "classification", "voice",
 ]
+
+# Valid task types the router can handle
+VALID_TASK_TYPES: set[str] = {
+    "code", "reasoning", "general", "bulk", "vision",
+    "research", "classification", "voice",
+}
+
+# Mapping for common invalid types the LLM might return
+TASK_TYPE_ALIASES: dict[str, str] = {
+    "design": "general",
+    "analysis": "reasoning",
+    "writing": "general",
+    "translation": "general",
+    "summarization": "general",
+    "extraction": "bulk",
+    "coding": "code",
+    "programming": "code",
+    "math": "reasoning",
+    "creative": "general",
+    "conversation": "general",
+    "search": "research",
+}
+
+
+def _validate_task_type(raw_type: str) -> str:
+    """Validate and normalize classifier output to a known task type."""
+    normalized = raw_type.lower().strip()
+    if normalized in VALID_TASK_TYPES:
+        return normalized
+    if normalized in TASK_TYPE_ALIASES:
+        logger.warning(
+            "Classifier returned '%s', remapping to '%s'",
+            raw_type, TASK_TYPE_ALIASES[normalized],
+        )
+        return TASK_TYPE_ALIASES[normalized]
+    logger.warning(
+        "Classifier returned unknown task type '%s', defaulting to 'general'",
+        raw_type,
+    )
+    return "general"
 GDPRSensitivity = Literal["none", "low", "high"]
 
 
@@ -111,7 +151,7 @@ _CLASSIFIER_SYSTEM_PROMPT = (
     "Analyze the user's prompt and return ONLY a JSON object with these fields:\n"
     '{\n'
     '  "task_type": "code"|"reasoning"|"research"|"vision"'
-    '|"bulk"|"creative"|"analysis"|"general",\n'
+    '|"bulk"|"general"|"classification"|"voice",\n'
     '  "complexity": <int 1-5>,\n'
     '  "has_code": <bool>,\n'
     '  "has_vision": <bool>,\n'
@@ -247,6 +287,9 @@ class TaskClassifier:
 
             content = response.choices[0].message.content
             data = json.loads(str(content))
+            # Validate/normalize task_type before Pydantic validation
+            if "task_type" in data:
+                data["task_type"] = _validate_task_type(str(data["task_type"]))
             data["mode_used"] = ClassificationMode.ONLINE
             data["confidence"] = 0.95
             return ClassificationResult.model_validate(data)
@@ -293,7 +336,7 @@ class TaskClassifier:
         elif research_score >= 2:
             task_type = "research"
         elif creative_score >= 2:
-            task_type = "creative"
+            task_type = "general"
         elif bulk_score >= 2 or len(prompt) < 50:
             task_type = "bulk"
         else:

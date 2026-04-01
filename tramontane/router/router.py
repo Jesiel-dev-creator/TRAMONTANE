@@ -39,10 +39,10 @@ _QUALITY_FLOORS: dict[str, str] = {
     "code": "devstral-small",
     "vision": "pixtral-large",
     "research": "mistral-small",
-    "creative": "mistral-small",
-    "analysis": "mistral-small",
     "general": "mistral-small",
     "bulk": "ministral-7b",
+    "classification": "ministral-3b",
+    "voice": "ministral-7b",
 }
 
 
@@ -249,6 +249,16 @@ class MistralRouter:
         ):
             return str(
                 routing.get("research", {}).get("frontier", "mistral-large")
+            )
+
+        if cls_result.task_type == "classification":
+            return str(
+                routing.get("classification", {}).get("default", "ministral-3b")
+            )
+
+        if cls_result.task_type == "voice":
+            return str(
+                routing.get("voice", {}).get("default", "ministral-7b")
             )
 
         return str(routing.get("general", {}).get("default", "mistral-small"))
