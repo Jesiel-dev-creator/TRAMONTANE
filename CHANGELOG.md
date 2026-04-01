@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.2.2 (2026-04-01) — The Evolution Release
+
+**The only agent framework that gets smarter every time you use it.**
+
+### New Capabilities
+- Tool calling: agents call Python functions + external APIs natively
+- Structured output: `output_schema=PydanticModel` for typed responses
+- Knowledge bases: RAG with mistral-embed, grounded in your documents
+- Parallel execution: run independent agents simultaneously
+- Pipeline YAML: define pipelines in .yaml files, run from CLI
+- Voice pipelines: speech -> agent -> speech via Voxtral TTS
+
+### Fleet Intelligence
+- FleetTuner: auto-discover optimal model+config per agent role
+- Self-learning router evolves from rule-based to data-driven
+- Progressive reasoning, model cascading, adaptive budget reallocation
+- Cost simulation, FleetProfile presets (BUDGET/BALANCED/QUALITY/UNIFIED)
+
+### CLI
+- `tramontane simulate` — cost estimation without API calls
+- `tramontane knowledge ingest/search` — manage knowledge bases
+- `tramontane telemetry stats` — fleet performance insights
+
+### Documentation
+- docs/quickstart.md, docs/smart-fleet.md, docs/patterns.md, docs/api-reference.md
+
+### Stats
+- 234 tests, ruff clean, mypy clean
+- Battle-tested on ArkhosAI and Gerald
+
 ## v0.2.1 (2026-04-01) — Smart Fleet + Self-Learning Router
 
 **The conductor the Mistral fleet was waiting for.**

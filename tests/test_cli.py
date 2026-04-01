@@ -35,3 +35,18 @@ class TestCLISmoke:
     def test_watch(self) -> None:
         result = runner.invoke(app, ["watch"])
         assert result.exit_code == 0
+
+    def test_simulate_missing_file(self) -> None:
+        result = runner.invoke(app, ["simulate", "/nonexistent.yaml"])
+        assert result.exit_code == 1
+
+    def test_telemetry_stats_empty(self) -> None:
+        result = runner.invoke(app, ["telemetry", "stats", "--db", ":memory:"])
+        # Empty telemetry exits 0 with a warning
+        assert result.exit_code == 0
+
+    def test_knowledge_search_empty_db(self) -> None:
+        result = runner.invoke(
+            app, ["knowledge", "search", "test", "--db", ":memory:"],
+        )
+        assert result.exit_code == 1

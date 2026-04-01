@@ -553,6 +553,160 @@ def hub(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# tramontane simulate
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def simulate(
+    pipeline_path: str = typer.Argument(..., help="Path to pipeline YAML"),
+    input_text: str = typer.Option("sample input", "--input", "-i"),
+) -> None:
+    """Estimate pipeline cost without calling any API."""
+    from tramontane.core.simulate import simulate_pipeline
+    from tramontane.core.yaml_pipeline import create_agents_from_spec, load_pipeline_spec
+
+    try:
+        spec = load_pipeline_spec(pipeline_path)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"  [{_ERR}]{exc}[/]")
+        raise typer.Exit(1) from exc
+
+    agents = create_agents_from_spec(spec)
+    sim = simulate_pipeline(agents, input_text, budget_eur=spec.budget_eur)
+
+    console.print()
+    console.print(Rule(title="COST SIMULATION", style=f"bold {_CYAN}"))
+
+    table = Table(box=box.MINIMAL_HEAVY_HEAD, header_style=f"bold {_CYAN}")
+    table.add_column("Agent", style=_FROST)
+    table.add_column("Model", style=_CYAN)
+    table.add_column("Est. Cost", justify="right", style=f"bold {_WARN}")
+    table.add_column("Est. Time", justify="right")
+    for a in sim.agents:
+        table.add_row(
+            a.role, a.model_predicted,
+            f"\u20ac{a.estimated_cost_eur:.4f}", f"{a.estimated_time_s:.1f}s",
+        )
+    console.print(table)
+
+    status_color = _OK if sim.budget_status == "within_budget" else _ERR
+    console.print(
+        f"\n  [{_FROST}]Total:[/] [{_WARN}]\u20ac{sim.total_estimated_cost_eur:.4f}[/]"
+        f"  [{_FROST}]Time:[/] {sim.total_estimated_time_s:.1f}s"
+        f"  [{status_color}]{sim.budget_status}[/]\n",
+    )
+
+
+# ---------------------------------------------------------------------------
+# tramontane knowledge
+# ---------------------------------------------------------------------------
+
+knowledge_app = typer.Typer(help="Manage knowledge bases (RAG)")
+app.add_typer(knowledge_app, name="knowledge")
+
+
+@knowledge_app.command("ingest")
+def knowledge_ingest(
+    path: str = typer.Argument(..., help="File path or glob pattern"),
+    db: str = typer.Option("tramontane_knowledge.db", "--db"),
+) -> None:
+    """Ingest files into a knowledge base."""
+    from tramontane.knowledge.base import KnowledgeBase
+
+    kb = KnowledgeBase(db_path=db)
+    count = asyncio.run(kb.ingest(sources=[path]))
+    console.print(
+        f"  [{_OK}]\u2713[/] [{_FROST}]Ingested {count} chunks[/]"
+        f" [{_STORM}]into {db}[/]  [{_STORM}]Total: {kb.chunk_count}[/]",
+    )
+
+
+@knowledge_app.command("search")
+def knowledge_search(
+    query: str = typer.Argument(..., help="Search query"),
+    top_k: int = typer.Option(5, "--top-k", "-k"),
+    db: str = typer.Option("tramontane_knowledge.db", "--db"),
+) -> None:
+    """Search the knowledge base."""
+    from tramontane.knowledge.base import KnowledgeBase
+
+    kb = KnowledgeBase(db_path=db)
+    if kb.chunk_count == 0:
+        console.print(
+            f"  [{_WARN}]Knowledge base is empty."
+            " Run 'tramontane knowledge ingest' first.[/]",
+        )
+        raise typer.Exit(1)
+
+    result = asyncio.run(kb.retrieve(query, top_k=top_k))
+    console.print()
+    console.print(Rule(title="KNOWLEDGE SEARCH", style=f"bold {_CYAN}"))
+    for chunk, score in zip(result.chunks, result.scores):
+        console.print(
+            f"  [{_CYAN}]{score:.2f}[/] [{_STORM}]{chunk.source}[/]",
+        )
+        console.print(f"  [{_FROST}]{chunk.content[:200]}...[/]\n")
+
+
+# ---------------------------------------------------------------------------
+# tramontane telemetry
+# ---------------------------------------------------------------------------
+
+telemetry_app = typer.Typer(help="Fleet telemetry and performance insights")
+app.add_typer(telemetry_app, name="telemetry")
+
+
+@telemetry_app.command("stats")
+def telemetry_stats(
+    db: str = typer.Option("tramontane_telemetry.db", "--db"),
+) -> None:
+    """Show fleet telemetry stats."""
+    from tramontane.router.telemetry import FleetTelemetry
+
+    t = FleetTelemetry(db_path=db)
+    if t.total_outcomes == 0:
+        console.print(f"  [{_WARN}]No telemetry data yet. Run some agents first.[/]")
+        raise typer.Exit(0)
+
+    stats = t.get_model_stats()
+    console.print()
+    console.print(Rule(title="FLEET TELEMETRY", style=f"bold {_CYAN}"))
+
+    table = Table(box=box.MINIMAL_HEAVY_HEAD, header_style=f"bold {_CYAN}")
+    table.add_column("Model", style=_FROST)
+    table.add_column("Effort", style=_STORM)
+    table.add_column("Calls", justify="right")
+    table.add_column("Success", justify="right", style=f"bold {_OK}")
+    table.add_column("Avg Cost", justify="right", style=f"bold {_WARN}")
+    table.add_column("Avg Latency", justify="right")
+
+    for s in stats:
+        raw_total = s.get("total", 0)
+        total = int(raw_total) if isinstance(raw_total, (int, float)) else 0
+        raw_succ = s.get("successes", 0)
+        succ = int(raw_succ) if isinstance(raw_succ, (int, float)) else 0
+        raw_cost = s.get("avg_cost", 0)
+        avg_cost = float(raw_cost) if isinstance(raw_cost, (int, float)) else 0.0
+        raw_lat = s.get("avg_latency", 0)
+        avg_lat = float(raw_lat) if isinstance(raw_lat, (int, float)) else 0.0
+        rate = f"{succ / total * 100:.0f}%" if total else "N/A"
+        table.add_row(
+            str(s.get("model_used", "")),
+            str(s.get("reasoning_effort", "\u2014")),
+            str(total), rate,
+            f"\u20ac{avg_cost:.4f}", f"{avg_lat:.1f}s",
+        )
+    console.print(table)
+    console.print(f"\n  [{_STORM}]Total outcomes: {t.total_outcomes}[/]\n")
+
+
+# ---------------------------------------------------------------------------
+# tramontane serve
+# ---------------------------------------------------------------------------
+
+
 @app.command()
 def serve(
     port: int = typer.Option(8080, help="Port to listen on"),

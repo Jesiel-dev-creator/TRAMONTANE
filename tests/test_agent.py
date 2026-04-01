@@ -655,6 +655,161 @@ class TestCascade:
         assert a.validate_output is None
 
 
+class TestToolCalling:
+    """Tool calling helpers and Agent integration."""
+
+    def test_function_to_tool_str_param(self) -> None:
+        from tramontane.core.agent import _function_to_tool
+
+        def search(query: str) -> str:
+            """Search the web."""
+            return query
+
+        spec = _function_to_tool(search)
+        assert spec["type"] == "function"
+        assert spec["function"]["name"] == "search"
+        assert spec["function"]["description"] == "Search the web."
+        assert spec["function"]["parameters"]["properties"]["query"]["type"] == "string"
+        assert "query" in spec["function"]["parameters"]["required"]
+
+    def test_function_to_tool_int_param(self) -> None:
+        from tramontane.core.agent import _function_to_tool
+
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        spec = _function_to_tool(add)
+        assert spec["function"]["parameters"]["properties"]["a"]["type"] == "integer"
+        assert spec["function"]["parameters"]["properties"]["b"]["type"] == "integer"
+        assert set(spec["function"]["parameters"]["required"]) == {"a", "b"}
+
+    def test_function_to_tool_bool_float(self) -> None:
+        from tramontane.core.agent import _function_to_tool
+
+        def configure(temp: float, verbose: bool) -> str:
+            """Configure settings."""
+            return ""
+
+        spec = _function_to_tool(configure)
+        assert spec["function"]["parameters"]["properties"]["temp"]["type"] == "number"
+        assert spec["function"]["parameters"]["properties"]["verbose"]["type"] == "boolean"
+
+    def test_function_to_tool_uses_docstring(self) -> None:
+        from tramontane.core.agent import _function_to_tool
+
+        def my_func(x: str) -> str:
+            """My custom description."""
+            return x
+
+        assert _function_to_tool(my_func)["function"]["description"] == "My custom description."
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_sync(self) -> None:
+        from tramontane.core.agent import _execute_tool
+
+        def greet(name: str) -> str:
+            return f"Hello {name}"
+
+        class FakeTC:
+            class function:
+                name = "greet"
+                arguments = '{"name": "Alice"}'
+            id = "tc_1"
+
+        result = await _execute_tool(FakeTC(), [greet])
+        assert result == "Hello Alice"
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_async(self) -> None:
+        from tramontane.core.agent import _execute_tool
+
+        async def fetch(url: str) -> str:
+            return f"Fetched {url}"
+
+        class FakeTC:
+            class function:
+                name = "fetch"
+                arguments = '{"url": "https://example.com"}'
+            id = "tc_2"
+
+        result = await _execute_tool(FakeTC(), [fetch])
+        assert result == "Fetched https://example.com"
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_not_found(self) -> None:
+        from tramontane.core.agent import _execute_tool
+
+        class FakeTC:
+            class function:
+                name = "nonexistent"
+                arguments = "{}"
+            id = "tc_3"
+
+        result = await _execute_tool(FakeTC(), [])
+        assert "Error" in result
+        assert "nonexistent" in result
+
+    def test_agent_with_tools_field(self) -> None:
+        def search(q: str) -> str:
+            return q
+
+        a = Agent(role="R", goal="G", backstory="B", tools=[search])
+        assert len(a.tools) == 1
+
+    def test_agent_without_tools_backward_compatible(self, sample_agent: Agent) -> None:
+        assert sample_agent.tools == []
+
+    def test_tool_call_stream_event(self) -> None:
+        from tramontane.core.agent import StreamEvent
+
+        e = StreamEvent(
+            type="tool_call", model_used="mistral-small",
+            tool_name="search", tool_args='{"q": "hello"}',
+        )
+        assert e.type == "tool_call"
+        assert e.tool_name == "search"
+
+
+class TestStructuredOutput:
+    """output_schema and parsed_output."""
+
+    def test_output_schema_field(self) -> None:
+        from pydantic import BaseModel as BM
+
+        class MyOutput(BM):
+            answer: str
+            score: float
+
+        a = Agent(
+            role="R", goal="G", backstory="B",
+            output_schema=MyOutput,
+        )
+        assert a.output_schema is MyOutput
+
+    def test_output_schema_default_none(self, sample_agent: Agent) -> None:
+        assert sample_agent.output_schema is None
+
+    def test_parsed_output_on_result(self) -> None:
+        from pydantic import BaseModel as BM
+
+        class Report(BM):
+            title: str
+            summary: str
+
+        result = AgentResult(
+            output='{"title": "Test", "summary": "OK"}',
+            model_used="mistral-small",
+            parsed_output=Report(title="Test", summary="OK"),
+        )
+        assert result.parsed_output is not None
+        assert result.parsed_output.title == "Test"
+
+    def test_parsed_output_none_when_no_schema(self) -> None:
+        result = AgentResult(output="hello", model_used="mistral-small")
+        assert result.parsed_output is None
+
+
 class TestPublicExports:
     """Package-level exports."""
 

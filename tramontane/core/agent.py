@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import datetime
+import inspect
+import json
 import logging
 import os
 import re
@@ -99,6 +101,8 @@ class AgentResult(BaseModel):
     duration_seconds: float = 0.0
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     reasoning_used: bool = False
+    parsed_output: Any | None = None
+    """Validated Pydantic model if Agent.output_schema was set."""
 
 
 class StreamEvent(BaseModel):
@@ -112,12 +116,78 @@ class StreamEvent(BaseModel):
         "start", "token", "complete", "error",
         "pattern_match", "validation_retry",
         "reasoning_escalation", "cascade_escalation",
+        "tool_call",
     ]
     token: str = ""
     model_used: str = ""
     result: AgentResult | None = None
     error: str = ""
     pattern_id: str = ""
+    tool_name: str = ""
+    tool_args: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Tool calling helpers
+# ---------------------------------------------------------------------------
+
+_PY_TO_JSON_TYPE: dict[str, str] = {
+    "str": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+}
+
+
+def _function_to_tool(func: Callable[..., Any]) -> dict[str, Any]:
+    """Convert a Python function with type hints to Mistral tool spec."""
+    sig = inspect.signature(func)
+    properties: dict[str, dict[str, str]] = {}
+    required: list[str] = []
+
+    for name, param in sig.parameters.items():
+        annotation = param.annotation
+        type_name = getattr(annotation, "__name__", str(annotation))
+        json_type = _PY_TO_JSON_TYPE.get(type_name, "string")
+        properties[name] = {"type": json_type}
+        if param.default is inspect.Parameter.empty:
+            required.append(name)
+
+    return {
+        "type": "function",
+        "function": {
+            "name": func.__name__,
+            "description": (func.__doc__ or "").strip(),
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
+async def _execute_tool(
+    tool_call: Any,
+    tools: list[Any],
+) -> str:
+    """Execute a tool call by matching function name and calling it."""
+    func_name = tool_call.function.name
+    try:
+        raw_args = tool_call.function.arguments
+        args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+    except (json.JSONDecodeError, TypeError):
+        args = {}
+
+    for tool in tools:
+        if callable(tool) and tool.__name__ == func_name:
+            if asyncio.iscoroutinefunction(tool):
+                result = await tool(**args)
+            else:
+                result = tool(**args)
+            return str(result)
+
+    return f"Error: tool '{func_name}' not found"
 
 
 class Agent(BaseModel):
@@ -146,6 +216,11 @@ class Agent(BaseModel):
 
     # ── TOOLS ────────────────────────────────────────────────────────
     tools: list[Any] = Field(default_factory=list)
+    tool_choice: str | None = None
+    """Tool choice strategy: "auto" (default when tools set), "none",
+    "any" (force at least one tool call), or "required"."""
+    parallel_tool_calls: bool = True
+    """Allow model to call multiple tools in one turn."""
     allow_code_execution: bool = False
     code_execution_mode: Literal["safe", "unsafe"] = "safe"
 
@@ -178,6 +253,13 @@ class Agent(BaseModel):
     add_history_to_context: bool = True
     learning: bool = False
 
+    # ── KNOWLEDGE (RAG) ─────────────────────────────────────────────
+    knowledge: Any | None = None
+    """Optional KnowledgeBase for RAG. Retrieves relevant chunks and
+    injects them into the system prompt before generation."""
+    knowledge_top_k: int = 5
+    """Number of top chunks to retrieve from knowledge base."""
+
     # ── COST CONTROL (Tramontane-unique) ─────────────────────────────
     budget_eur: float | None = None
 
@@ -199,6 +281,9 @@ class Agent(BaseModel):
     per model before cascading to the next."""
     fleet_profile: FleetProfile | None = None
     """Optional fleet profile preset. Applies when model='auto'."""
+    output_schema: type[BaseModel] | None = None
+    """Pydantic model to validate agent output. When set, activates
+    JSON mode and validates against the schema."""
 
     # ── OBSERVABILITY ────────────────────────────────────────────────
     audit_actions: bool = True
@@ -502,8 +587,19 @@ class Agent(BaseModel):
         model_info = MISTRAL_MODELS.get(model_alias)
         api_model = model_info.api_id if model_info else model_alias
 
-        # 2. Build messages
+        # 2. Build messages (with optional RAG context)
         sys_prompt = self.system_prompt()
+        if self.knowledge is not None:
+            retrieval = await self.knowledge.retrieve(
+                input_text, top_k=self.knowledge_top_k,
+            )
+            kb_context = self.knowledge.format_context(retrieval)
+            if kb_context:
+                sys_prompt += f"\n\n{kb_context}"
+                logger.info(
+                    "Retrieved %d chunks from knowledge base",
+                    len(retrieval.chunks),
+                )
         if context:
             sys_prompt += f"\n\n## Additional Context\n{context}"
         messages: list[dict[str, str]] = [
@@ -547,6 +643,22 @@ class Agent(BaseModel):
         if self.temperature is not None:
             chat_kwargs["temperature"] = self.temperature
 
+        # Structured output (JSON mode)
+        if self.output_schema is not None:
+            chat_kwargs["response_format"] = {"type": "json_object"}
+
+        # Tools
+        callable_tools = [t for t in self.tools if callable(t)]
+        if self.tools:
+            chat_kwargs["tools"] = [
+                _function_to_tool(t) if callable(t) else t for t in self.tools
+            ]
+            chat_kwargs["tool_choice"] = self.tool_choice or "auto"
+            chat_kwargs["parallel_tool_calls"] = self.parallel_tool_calls
+            # Mistral best practice: low temperature for consistent tool calls
+            if self.temperature is None:
+                chat_kwargs["temperature"] = 0.1
+
         # Reasoning effort: use override (progressive) or agent setting
         effective_effort = effort_override or self.reasoning_effort or profile_effort_override
         if effective_effort is not None and model_info:
@@ -557,6 +669,8 @@ class Agent(BaseModel):
                     "Model %s doesn't support reasoning_effort, ignoring",
                     model_alias,
                 )
+
+        all_tool_calls: list[dict[str, Any]] = []
 
         for attempt in range(max_retries + 1):
             try:
@@ -588,17 +702,41 @@ class Agent(BaseModel):
                 )
                 await anyio.sleep(wait)
 
+        # 5. Tool call loop — execute tools until final text response
+        if callable_tools:
+            tool_iter = 0
+            while tool_iter < self.max_iter:
+                msg = response.choices[0].message
+                if not (hasattr(msg, "tool_calls") and msg.tool_calls):
+                    break
+                # Append assistant message with tool calls to conversation
+                chat_kwargs["messages"].append(msg)
+                for tc in msg.tool_calls:
+                    tc_result = await _execute_tool(tc, callable_tools)
+                    raw_args = tc.function.arguments
+                    all_tool_calls.append({
+                        "name": tc.function.name,
+                        "args": (
+                            json.loads(raw_args) if isinstance(raw_args, str)
+                            else dict(raw_args)
+                        ),
+                        "result": tc_result,
+                    })
+                    chat_kwargs["messages"].append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": tc_result,
+                    })
+                    tool_iter += 1
+                # Call again with tool results
+                response = await client.chat.complete_async(**chat_kwargs)
+
         duration = time.monotonic() - start_time
 
-        # 5. Extract output
+        # 6. Extract output
         choice = response.choices[0]
         output_text = str(choice.message.content or "")
-        tool_calls: list[dict[str, Any]] = []
-        if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
-            tool_calls = [
-                {"name": tc.function.name, "arguments": tc.function.arguments}
-                for tc in choice.message.tool_calls
-            ]
+        tool_calls = all_tool_calls
 
         # 6. Actual cost from real API token counts
         input_tokens = 0
@@ -620,6 +758,14 @@ class Agent(BaseModel):
             actual_cost, duration,
         )
 
+        # 8. Parse structured output if schema is set
+        parsed_output: Any | None = None
+        if self.output_schema is not None:
+            try:
+                parsed_output = self.output_schema.model_validate_json(output_text)
+            except Exception as exc:
+                logger.warning("Output schema validation failed: %s", exc)
+
         return AgentResult(
             output=output_text,
             model_used=model_alias,
@@ -629,6 +775,7 @@ class Agent(BaseModel):
             duration_seconds=round(duration, 3),
             tool_calls=tool_calls,
             reasoning_used=self.reasoning,
+            parsed_output=parsed_output,
         )
 
     async def run_stream(
@@ -721,8 +868,15 @@ class Agent(BaseModel):
         model_info = MISTRAL_MODELS.get(model_alias)
         api_model = model_info.api_id if model_info else model_alias
 
-        # 2. Build messages
+        # 2. Build messages (with optional RAG context)
         sys_prompt = self.system_prompt()
+        if self.knowledge is not None:
+            retrieval = await self.knowledge.retrieve(
+                input_text, top_k=self.knowledge_top_k,
+            )
+            kb_context = self.knowledge.format_context(retrieval)
+            if kb_context:
+                sys_prompt += f"\n\n{kb_context}"
         if context:
             sys_prompt += f"\n\n## Additional Context\n{context}"
         messages: list[dict[str, str]] = [
