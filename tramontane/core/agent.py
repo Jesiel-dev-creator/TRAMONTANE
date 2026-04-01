@@ -456,12 +456,13 @@ class Agent(BaseModel):
         # 5. Yield start event
         yield StreamEvent(type="start", model_used=model_alias)
 
-        # 6. Stream from Mistral with retry + backoff
+        # 6. Stream from Mistral with retry + backoff + timeout
         client = Mistral(api_key=api_key)
         start_time = time.monotonic()
         full_output = ""
         input_tokens = 0
         output_tokens = 0
+        tokens_yielded = False
 
         for attempt in range(self.max_retry_limit + 1):
             try:
@@ -471,12 +472,26 @@ class Agent(BaseModel):
                 )
                 async with stream as event_stream:
                     async for event in event_stream:
+                        # Timeout guard (CLAUDE.md failure mode #5)
+                        if self.max_execution_time:
+                            elapsed = time.monotonic() - start_time
+                            if elapsed > self.max_execution_time:
+                                yield StreamEvent(
+                                    type="error",
+                                    error=(
+                                        f"Agent '{self.role}' timed out after "
+                                        f"{self.max_execution_time}s"
+                                    ),
+                                )
+                                return
+
                         chunk = event.data
                         if chunk.choices:
                             delta = chunk.choices[0].delta
                             token_text = str(delta.content) if delta.content else ""
                             if token_text:
                                 full_output += token_text
+                                tokens_yielded = True
                                 yield StreamEvent(
                                     type="token",
                                     token=token_text,
@@ -489,7 +504,9 @@ class Agent(BaseModel):
                 break  # success
 
             except Exception as exc:
-                if attempt >= self.max_retry_limit:
+                # Never retry after tokens were already sent to consumer
+                # (can't un-yield — would produce duplicated/corrupt output)
+                if tokens_yielded or attempt >= self.max_retry_limit:
                     yield StreamEvent(type="error", error=str(exc))
                     return
                 wait = min(2 ** attempt, 30)
