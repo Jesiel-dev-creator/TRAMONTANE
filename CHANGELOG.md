@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.1.5 (2026-04-01)
+
+### Added
+- **Agent.run_stream()** — Token-by-token async streaming via Mistral SDK's
+  `chat.stream_async()`. Yields `StreamEvent` objects (start/token/complete/error).
+  Enables live preview in ArkhosAI and any SSE-based frontend.
+- **StreamEvent** model — Pydantic model for streaming events, exported from
+  `tramontane` package.
+
+### Fixed
+- **Router classifier validation** — Online classifier output is now validated
+  and normalized before routing. Invalid task types (e.g. "design", "creative",
+  "analysis") are remapped to valid types. Unknown types default to "general".
+  Added `VALID_TASK_TYPES`, `TASK_TYPE_ALIASES`, `_validate_task_type()`.
+- **Budget pre-estimation too aggressive** — `_estimate_call_cost()` multipliers
+  reduced (output: 2.0x/1.5x to 1.2x/0.8x; overhead: 1.4x to 1.1x).
+  `check_budget()` now uses 2x tolerance (soft pre-call guard). Prevents
+  BudgetExceededError on affordable ministral-3b calls with tight budgets.
+- **TaskType enum updated** — Removed "creative"/"analysis" (unmapped in router),
+  added "classification"/"voice" with proper routing and quality floors.
+
+### Validated
+- 81 unit tests passing (74 + 7 new)
+- ruff clean, mypy clean
+
 ## v0.1.3 (2026-03-30)
 
 ### Hardened

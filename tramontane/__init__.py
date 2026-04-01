@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 __author__ = "Bleucommerce SAS"
 __license__ = "MIT"
 
