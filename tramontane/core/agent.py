@@ -15,6 +15,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -360,6 +361,174 @@ class Agent(BaseModel):
             duration_seconds=round(duration, 3),
             tool_calls=tool_calls,
             reasoning_used=self.reasoning,
+        )
+
+    async def run_stream(
+        self,
+        input_text: str,
+        *,
+        router: Any | None = None,
+        conversation_history: list[dict[str, str]] | None = None,
+        run_id: str | None = None,
+        spent_eur: float = 0.0,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Execute this agent with token-by-token streaming.
+
+        Yields StreamEvent objects as tokens are generated.
+        The final event has type="complete" with a full AgentResult.
+        Errors are yielded as type="error" events (never raised).
+
+        Same pre-flight as run(): model resolution, budget check,
+        message building. Post-stream actual cost uses real token counts.
+
+        Args:
+            input_text: The user/handoff message to process.
+            router: Optional MistralRouter for model="auto" resolution.
+            conversation_history: Prior messages to include as context.
+            run_id: Trace identifier (generated if not provided).
+            spent_eur: Total already spent by Pipeline (for budget check).
+
+        Yields:
+            StreamEvent with type in ("start", "token", "complete", "error").
+        """
+        import anyio
+        from mistralai.client import Mistral
+
+        # -- Input validation --
+        if not input_text or not input_text.strip():
+            yield StreamEvent(
+                type="error",
+                error=f"Agent '{self.role}': input_text must be a non-empty string",
+            )
+            return
+        if self.budget_eur is not None and self.budget_eur < 0:
+            yield StreamEvent(
+                type="error",
+                error=f"Agent '{self.role}': budget_eur must be >= 0, got {self.budget_eur}",
+            )
+            return
+
+        rid = run_id or uuid.uuid4().hex[:12]
+
+        # 1. Resolve model
+        model_alias = self.model
+        if model_alias == "auto" and router is not None:
+            try:
+                routing_decision = await router.route(
+                    prompt=input_text,
+                    agent_budget_eur=self.budget_eur,
+                    locale=self.locale,
+                )
+                model_alias = routing_decision.primary_model
+            except Exception as exc:
+                yield StreamEvent(type="error", error=str(exc))
+                return
+
+        model_info = MISTRAL_MODELS.get(model_alias)
+        api_model = model_info.api_id if model_info else model_alias
+
+        # 2. Build messages
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self.system_prompt()},
+        ]
+        if conversation_history:
+            messages.extend(conversation_history)
+        messages.append({"role": "user", "content": input_text})
+
+        # 3. Pre-call budget check
+        if model_info:
+            est_cost = self._estimate_call_cost(messages, model_info)
+            try:
+                self.check_budget(est_cost, spent_eur=spent_eur)
+            except BudgetExceededError as exc:
+                yield StreamEvent(type="error", error=str(exc))
+                return
+
+        # 4. API key check
+        api_key = os.environ.get("MISTRAL_API_KEY")
+        if not api_key:
+            yield StreamEvent(
+                type="error",
+                error="MISTRAL_API_KEY environment variable is not set",
+            )
+            return
+
+        # 5. Yield start event
+        yield StreamEvent(type="start", model_used=model_alias)
+
+        # 6. Stream from Mistral with retry + backoff
+        client = Mistral(api_key=api_key)
+        start_time = time.monotonic()
+        full_output = ""
+        input_tokens = 0
+        output_tokens = 0
+
+        for attempt in range(self.max_retry_limit + 1):
+            try:
+                stream = await client.chat.stream_async(
+                    model=api_model,
+                    messages=messages,  # type: ignore[arg-type]
+                )
+                async with stream as event_stream:
+                    async for event in event_stream:
+                        chunk = event.data
+                        if chunk.choices:
+                            delta = chunk.choices[0].delta
+                            token_text = str(delta.content) if delta.content else ""
+                            if token_text:
+                                full_output += token_text
+                                yield StreamEvent(
+                                    type="token",
+                                    token=token_text,
+                                    model_used=model_alias,
+                                )
+                        # Final chunk carries usage info
+                        if chunk.usage:
+                            input_tokens = chunk.usage.prompt_tokens or 0
+                            output_tokens = chunk.usage.completion_tokens or 0
+                break  # success
+
+            except Exception as exc:
+                if attempt >= self.max_retry_limit:
+                    yield StreamEvent(type="error", error=str(exc))
+                    return
+                wait = min(2 ** attempt, 30)
+                logger.warning(
+                    "[%s] Stream error (attempt %d/%d): %s — retrying in %ds",
+                    rid, attempt + 1, self.max_retry_limit + 1, exc, wait,
+                )
+                await anyio.sleep(wait)
+
+        duration = time.monotonic() - start_time
+
+        # 7. Calculate actual cost
+        actual_cost = 0.0
+        if model_info:
+            actual_cost = (
+                (input_tokens / 1_000_000) * model_info.cost_per_1m_input_eur
+                + (output_tokens / 1_000_000) * model_info.cost_per_1m_output_eur
+            )
+
+        logger.debug(
+            "[%s] stream agent=%s model=%s tokens=%d/%d cost=EUR %.6f dur=%.2fs",
+            rid, self.role, model_alias, input_tokens, output_tokens,
+            actual_cost, duration,
+        )
+
+        # 8. Yield complete event with full AgentResult
+        yield StreamEvent(
+            type="complete",
+            model_used=model_alias,
+            result=AgentResult(
+                output=full_output,
+                model_used=model_alias,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_eur=actual_cost,
+                duration_seconds=round(duration, 3),
+                tool_calls=[],
+                reasoning_used=self.reasoning,
+            ),
         )
 
     def _estimate_call_cost(

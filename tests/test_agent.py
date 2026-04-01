@@ -262,3 +262,56 @@ class TestStreamEvent:
         e = StreamEvent(type="error", error="API failed")
         assert e.type == "error"
         assert e.error == "API failed"
+
+
+class TestRunStream:
+    """Agent.run_stream() streaming execution."""
+
+    @pytest.mark.asyncio
+    async def test_empty_input_yields_error(self, sample_agent: Agent) -> None:
+        from tramontane.core.agent import StreamEvent
+
+        events: list[StreamEvent] = []
+        async for event in sample_agent.run_stream(""):
+            events.append(event)
+        assert len(events) == 1
+        assert events[0].type == "error"
+        assert "non-empty" in events[0].error
+
+    @pytest.mark.asyncio
+    async def test_budget_checked_before_streaming(self) -> None:
+        """Budget check fires before any streaming starts."""
+        a = Agent(
+            role="R", goal="G", backstory="B",
+            model="mistral-large",
+            budget_eur=0.0000001,  # impossibly tight
+        )
+        from tramontane.core.agent import StreamEvent
+
+        events: list[StreamEvent] = []
+        async for event in a.run_stream("Analyze everything in detail " * 100):
+            events.append(event)
+        # Should get exactly one error event (budget exceeded)
+        assert len(events) == 1
+        assert events[0].type == "error"
+        assert "budget" in events[0].error.lower() or "Budget" in events[0].error
+
+    @pytest.mark.asyncio
+    async def test_missing_api_key_yields_error(self) -> None:
+        """Missing API key yields an error event, not an exception."""
+        import os
+
+        a = Agent(role="R", goal="G", backstory="B", model="mistral-small")
+        original = os.environ.pop("MISTRAL_API_KEY", None)
+        try:
+            from tramontane.core.agent import StreamEvent
+
+            events: list[StreamEvent] = []
+            async for event in a.run_stream("hello"):
+                events.append(event)
+            assert len(events) == 1
+            assert events[0].type == "error"
+            assert "MISTRAL_API_KEY" in events[0].error
+        finally:
+            if original:
+                os.environ["MISTRAL_API_KEY"] = original
