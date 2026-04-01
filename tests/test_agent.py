@@ -317,6 +317,29 @@ class TestRunStream:
                 os.environ["MISTRAL_API_KEY"] = original
 
 
+class TestMaxTokens:
+    """max_tokens field and API passthrough."""
+
+    def test_max_tokens_field_exists(self) -> None:
+        a = Agent(role="R", goal="G", backstory="B", max_tokens=16000)
+        assert a.max_tokens == 16000
+
+    def test_max_tokens_default_none(self, sample_agent: Agent) -> None:
+        assert sample_agent.max_tokens is None
+
+    def test_max_tokens_in_model_registry(self) -> None:
+        from tramontane.router.models import MISTRAL_MODELS
+
+        for alias, model in MISTRAL_MODELS.items():
+            assert model.max_output_tokens > 0, f"{alias} missing max_output_tokens"
+
+    def test_devstral_small_has_32k_output(self) -> None:
+        from tramontane.router.models import get_model
+
+        model = get_model("devstral-small")
+        assert model.max_output_tokens == 32768
+
+
 class TestPublicExports:
     """Package-level exports."""
 

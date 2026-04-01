@@ -85,6 +85,7 @@ class Agent(BaseModel):
     max_iter: int = 20
     max_rpm: int | None = None
     max_execution_time: int | None = None  # seconds
+    max_tokens: int | None = None  # max output tokens, None = model default
     max_retry_limit: int = 3
     respect_context_window: bool = True
 
@@ -287,12 +288,16 @@ class Agent(BaseModel):
         max_retries = self.max_retry_limit
         response: Any = None
 
+        chat_kwargs: dict[str, Any] = {
+            "model": api_model,
+            "messages": messages,
+        }
+        if self.max_tokens is not None:
+            chat_kwargs["max_tokens"] = self.max_tokens
+
         for attempt in range(max_retries + 1):
             try:
-                coro = client.chat.complete_async(
-                    model=api_model,
-                    messages=messages,  # type: ignore[arg-type]
-                )
+                coro = client.chat.complete_async(**chat_kwargs)
                 if self.max_execution_time:
                     response = await asyncio.wait_for(
                         coro, timeout=float(self.max_execution_time),
@@ -464,12 +469,16 @@ class Agent(BaseModel):
         output_tokens = 0
         tokens_yielded = False
 
+        stream_kwargs: dict[str, Any] = {
+            "model": api_model,
+            "messages": messages,
+        }
+        if self.max_tokens is not None:
+            stream_kwargs["max_tokens"] = self.max_tokens
+
         for attempt in range(self.max_retry_limit + 1):
             try:
-                stream = await client.chat.stream_async(
-                    model=api_model,
-                    messages=messages,  # type: ignore[arg-type]
-                )
+                stream = await client.chat.stream_async(**stream_kwargs)
                 async with stream as event_stream:
                     async for event in event_stream:
                         # Timeout guard (CLAUDE.md failure mode #5)

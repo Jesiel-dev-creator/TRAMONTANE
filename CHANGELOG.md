@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.1.6 (2026-04-01)
+
+### Added
+- **Agent.max_tokens** field — controls maximum output tokens passed to
+  Mistral API. `None` (default) uses model default. Set to 16000+ for
+  long-form generation (e.g. ArkhosAI Builder generating full React projects).
+- **MistralModel.max_output_tokens** — each model in the registry now
+  declares its maximum output token limit (8192 for ministral/voxtral,
+  32768 for all others).
+- `max_tokens` passed to both `run()` and `run_stream()` API calls.
+
+### Validated
+- 85 unit tests passing (81 + 4 new)
+- ruff clean, mypy clean
+
 ## v0.1.5 (2026-04-01)
 
 ### Added
