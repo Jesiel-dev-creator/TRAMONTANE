@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tramontane.core.agent import Agent
+from tramontane.core.agent import Agent, AgentResult
 from tramontane.core.exceptions import BudgetExceededError
 
 
@@ -72,16 +72,25 @@ class TestCostControl:
         budget_agent.check_budget(0.0005)  # Should not raise
 
     def test_check_budget_over_limit(self, budget_agent: Agent) -> None:
+        # budget_eur=0.001, remaining=0.001, 2x tolerance=0.002
+        # estimate of 0.003 exceeds 0.002 → should raise
         with pytest.raises(BudgetExceededError):
-            budget_agent.check_budget(0.002)
+            budget_agent.check_budget(0.003)
+
+    def test_check_budget_within_tolerance(self, budget_agent: Agent) -> None:
+        # budget_eur=0.001, remaining=0.001, 2x tolerance=0.002
+        # estimate of 0.0015 is within tolerance → should NOT raise
+        budget_agent.check_budget(0.0015)  # Should not raise
 
     def test_check_budget_with_spent(self, budget_agent: Agent) -> None:
-        # budget_eur=0.001, already spent 0.0008 → 0.0003 more should fail
+        # budget_eur=0.001, spent 0.0008, remaining=0.0002, 2x=0.0004
+        # estimate of 0.001 exceeds 0.0004 → should raise
         with pytest.raises(BudgetExceededError):
-            budget_agent.check_budget(0.0003, spent_eur=0.0008)
+            budget_agent.check_budget(0.001, spent_eur=0.0008)
 
     def test_check_budget_with_spent_under_limit(self, budget_agent: Agent) -> None:
-        # budget_eur=0.001, spent 0.0005, estimating 0.0003 → total 0.0008 < 0.001
+        # budget_eur=0.001, spent 0.0005, remaining=0.0005, 2x=0.001
+        # estimate of 0.0003 is within tolerance → should NOT raise
         budget_agent.check_budget(0.0003, spent_eur=0.0005)  # Should not raise
 
     def test_no_budget_check_passes(self, sample_agent: Agent) -> None:
@@ -142,6 +151,67 @@ class TestRunValidation:
         assert result.task_type == "code"
 
 
+class TestBudgetEstimationTolerance:
+    """Pre-call budget estimation should not block affordable calls."""
+
+    def test_cheap_model_small_budget_passes(self) -> None:
+        """ministral-3b with budget=0.001 should not raise on short prompt."""
+        a = Agent(
+            role="Classifier",
+            goal="Classify",
+            backstory="Triage agent",
+            model="ministral-3b",
+            budget_eur=0.001,
+        )
+        from tramontane.router.models import get_model
+
+        model_info = get_model("ministral-3b")
+        messages = [
+            {"role": "system", "content": "You are a classifier."},
+            {"role": "user", "content": "What is this about?"},
+        ]
+        est = a._estimate_call_cost(messages, model_info)
+        # Should not raise — estimate should be well within 2x tolerance
+        a.check_budget(est, spent_eur=0.0)
+
+    def test_very_tight_budget_long_prompt_raises(self) -> None:
+        """budget=0.0001 with a very long prompt should still raise."""
+        a = Agent(
+            role="Writer",
+            goal="Write",
+            backstory="Expert",
+            model="mistral-large",
+            budget_eur=0.0001,
+        )
+        from tramontane.router.models import get_model
+
+        model_info = get_model("mistral-large")
+        messages = [
+            {"role": "system", "content": "You are an expert writer."},
+            {"role": "user", "content": "Analyze this: " + "x" * 5000},
+        ]
+        est = a._estimate_call_cost(messages, model_info)
+        with pytest.raises(BudgetExceededError):
+            a.check_budget(est, spent_eur=0.0)
+
+    def test_estimate_lower_than_before(self) -> None:
+        """Estimation should be less aggressive than the old 2.0x/1.4x approach."""
+        a = Agent(
+            role="R", goal="G", backstory="B", reasoning=True,
+        )
+        from tramontane.router.models import get_model
+
+        model_info = get_model("ministral-3b")
+        messages = [
+            {"role": "system", "content": "Role: R\nGoal: G\nBackstory: B"},
+            {"role": "user", "content": "Hello world, classify this text."},
+        ]
+        est = a._estimate_call_cost(messages, model_info)
+        # With ministral-3b (0.04/0.04 per 1M), a ~20 token message
+        # should estimate well under 0.0001 EUR
+        assert est < 0.0001
+
+
 class TestFromYaml:
     """YAML loading."""
 
@@ -164,3 +234,31 @@ class TestFromYaml:
         assert agent.model == "devstral-small"
         assert agent.budget_eur == 0.01
         Path(f.name).unlink()
+
+
+class TestStreamEvent:
+    """StreamEvent model."""
+
+    def test_token_event(self) -> None:
+        from tramontane.core.agent import StreamEvent
+
+        e = StreamEvent(type="token", token="hello", model_used="mistral-small")
+        assert e.type == "token"
+        assert e.token == "hello"
+        assert e.result is None
+
+    def test_complete_event_with_result(self) -> None:
+        from tramontane.core.agent import StreamEvent
+
+        result = AgentResult(output="done", model_used="mistral-small")
+        e = StreamEvent(type="complete", result=result, model_used="mistral-small")
+        assert e.type == "complete"
+        assert e.result is not None
+        assert e.result.output == "done"
+
+    def test_error_event(self) -> None:
+        from tramontane.core.agent import StreamEvent
+
+        e = StreamEvent(type="error", error="API failed")
+        assert e.type == "error"
+        assert e.error == "API failed"

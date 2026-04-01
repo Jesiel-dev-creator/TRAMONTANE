@@ -40,6 +40,20 @@ class AgentResult(BaseModel):
     reasoning_used: bool = False
 
 
+class StreamEvent(BaseModel):
+    """Event emitted during streaming agent execution.
+
+    Yielded by Agent.run_stream() — one per token chunk, then
+    a final 'complete' event carrying the full AgentResult.
+    """
+
+    type: Literal["start", "token", "complete", "error"]
+    token: str = ""
+    model_used: str = ""
+    result: AgentResult | None = None
+    error: str = ""
+
+
 class Agent(BaseModel):
     """A single Tramontane agent backed by a Mistral model.
 
@@ -123,14 +137,21 @@ class Agent(BaseModel):
         estimated_cost: float,
         spent_eur: float = 0.0,
     ) -> None:
-        """Raise BudgetExceededError if estimated_cost would exceed budget.
+        """Raise BudgetExceededError if estimated cost far exceeds budget.
+
+        Pre-call estimation is rough — only reject if the estimate is
+        more than 2x over the remaining budget.  Actual cost is always
+        checked post-call by Pipeline (the hard guard).
 
         Args:
             estimated_cost: The projected cost of the next call.
             spent_eur: Total already spent (passed by Pipeline).
         """
         if self.budget_eur is not None:
-            if spent_eur + estimated_cost > self.budget_eur:
+            budget_remaining = self.budget_eur - spent_eur
+            # Only reject if estimate is more than 2x over remaining budget
+            # (estimation is rough — don't block affordable calls)
+            if estimated_cost > budget_remaining * 2.0:
                 raise BudgetExceededError(
                     budget_eur=self.budget_eur,
                     spent_eur=spent_eur,
@@ -349,21 +370,24 @@ class Agent(BaseModel):
         """Estimate cost BEFORE making the API call.
 
         Uses character-based token estimation (~3.5 chars/token) plus
-        output multiplier based on task type.
+        conservative output multiplier.  This is a soft guard — the
+        real budget enforcement happens post-call with actual token
+        counts accumulated by Pipeline.
         """
         # Input tokens: ~3.5 chars per token for mixed en/fr
         total_chars = sum(len(m["content"]) for m in messages)
         est_input_tokens = total_chars / 3.5
 
-        # Output estimate: 2x input for reasoning, 1.5x otherwise
-        output_multiplier = 2.0 if self.reasoning else 1.5
+        # Output estimate: 1.2x input for reasoning, 0.8x otherwise
+        # (most outputs are shorter than inputs)
+        output_multiplier = 1.2 if self.reasoning else 0.8
         est_output_tokens = est_input_tokens * output_multiplier
 
         input_cost = (est_input_tokens / 1_000_000) * model_info.cost_per_1m_input_eur
         output_cost = (est_output_tokens / 1_000_000) * model_info.cost_per_1m_output_eur
 
-        # Reasoning models use more tokens (1.4x overhead)
-        reasoning_overhead = 1.4 if self.reasoning else 1.0
+        # Reasoning adds modest overhead (1.1x), not 1.4x
+        reasoning_overhead = 1.1 if self.reasoning else 1.0
         return (input_cost + output_cost) * reasoning_overhead
 
     # ── YAML LOADING ─────────────────────────────────────────────────
