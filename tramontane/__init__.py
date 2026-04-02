@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 __author__ = "Bleucommerce SAS"
 __license__ = "MIT"
 
@@ -28,8 +28,20 @@ from tramontane.core.yaml_pipeline import (  # noqa: E402
     run_yaml_pipeline,
 )
 from tramontane.knowledge.base import KnowledgeBase, RetrievalResult  # noqa: E402
+from tramontane.memory.engine import TramontaneMemory  # noqa: E402
+from tramontane.memory.retrieval import MemoryRetriever  # noqa: E402
+from tramontane.memory.tools import create_memory_tools  # noqa: E402
+from tramontane.memory.working import WorkingBlock  # noqa: E402
 from tramontane.router.router import MistralRouter  # noqa: E402
 from tramontane.router.telemetry import FleetTelemetry, RoutingOutcome  # noqa: E402
+from tramontane.skills.base import Skill, SkillResult  # noqa: E402
+from tramontane.skills.composition import (  # noqa: E402
+    ConditionalSkill,
+    ParallelSkills,
+    SkillPipeline,
+)
+from tramontane.skills.loader import MarkdownSkill, SkillLoader  # noqa: E402
+from tramontane.skills.registry import SkillRegistry  # noqa: E402
 from tramontane.voice.tts import VoicePipeline, VoiceResult  # noqa: E402
 
 __all__ = [
@@ -54,6 +66,18 @@ __all__ = [
     "run_yaml_pipeline",
     "simulate_agent",
     "simulate_pipeline",
+    "TramontaneMemory",
+    "MemoryRetriever",
+    "WorkingBlock",
+    "create_memory_tools",
+    "Skill",
+    "SkillResult",
+    "SkillRegistry",
+    "SkillLoader",
+    "SkillPipeline",
+    "ConditionalSkill",
+    "ParallelSkills",
+    "MarkdownSkill",
     "VoicePipeline",
     "VoiceResult",
     "__version__",

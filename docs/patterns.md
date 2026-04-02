@@ -1,51 +1,35 @@
 # Real-World Patterns
 
-Production patterns from ArkhosAI and Gerald.
+Production patterns from ArkhosAI, Gerald, and common architectures.
 
-## Pattern 1: ArkhosAI — 4-Agent Website Generator
+## Pattern 1: ArkhosAI — Website Generator
 
-ArkhosAI generates full websites from a prompt. EUR 0.004 per generation.
-
-### Pipeline structure
+4-agent pipeline generating full websites. EUR 0.004/generation.
 
 ```yaml
 name: ArkhosAI Builder
 budget_eur: 0.02
-
 agents:
   planner:
     role: Planner
-    goal: Plan the website structure
     model: mistral-small-4
     reasoning_effort: medium
-    budget_eur: 0.002
-
   designer:
     role: Designer
-    goal: Create design tokens (colors, fonts, spacing)
     model: mistral-small-4
     reasoning_effort: none
     routing_hint: text-only JSON output
-    budget_eur: 0.001
-
   builder:
     role: Frontend Builder
-    goal: Generate React components
     model: devstral-small
-    cascade: ["devstral-2"]
     max_tokens: 32000
-    budget_eur: 0.012
-
   reviewer:
     role: Code Reviewer
-    goal: Fix bugs and improve quality
     model: devstral-small
-    budget_eur: 0.005
-
 flow: [planner, designer, builder, reviewer]
 ```
 
-### SSE streaming with file extraction
+### Streaming with File Extraction
 
 ```python
 async for event in builder.run_stream(
@@ -61,94 +45,89 @@ async for event in builder.run_stream(
         emit_sse("file_ready", event.pattern_id)
 ```
 
-### Validation + cascade prevents truncation
+### Cascade for Reliability
 
 ```python
 builder = Agent(
     model="devstral-small",
     cascade=["devstral-2", "mistral-large-3"],
     validate_output=lambda r: r.output.count("</file>") >= 5,
-    max_validation_retries=1,
 )
 ```
 
-## Pattern 2: Gerald — Business Operations Agent
-
-Gerald runs 3 pipelines: lead gen, social media, weekly briefing.
-
-### Lead generation with tool calling
+### Parallel Design + Architecture
 
 ```python
-def search_linkedin(company: str) -> str:
-    """Search LinkedIn for company contacts."""
-    return api.search(company)
+from tramontane import ParallelGroup
+
+group = ParallelGroup([
+    Agent(role="Designer", goal="Create design tokens"),
+    Agent(role="Architect", goal="Plan component structure"),
+])
+result = await group.run(input_text="Design a bakery website")
+design_tokens = result.get("Designer").output
+architecture = result.get("Architect").output
+```
+
+## Pattern 2: Gerald — Business Intelligence Agent
+
+Memory-powered business agent with skills and tool calling.
+
+### Orchestrator with Skills
+
+```python
+from tramontane import SkillRegistry, TramontaneMemory
+
+memory = TramontaneMemory(db_path="gerald.db")
+registry = SkillRegistry()
+registry.register(LeadResearchSkill())
+registry.register(LeadQualifierSkill())
+registry.register(EmailDraftSkill())
+
+# Orchestrator finds best skill
+matches = registry.search("research Scaleway")
+skill = matches[0][0]
+result = await skill.execute_with_memory("Research Scaleway", memory=memory)
+```
+
+### Tool Calling for Web Research
+
+```python
+async def search_linkedin(company: str) -> str:
+    """Search LinkedIn for company info."""
+    return await api.search(company)
 
 researcher = Agent(
     role="Lead Researcher",
     tools=[search_linkedin, search_crunchbase],
-    knowledge=company_kb,  # RAG with company data
-    model="mistral-small-4",
+    tramontane_memory=memory,
+    memory_tools=True,
+    auto_extract_facts=True,
 )
 ```
 
-### Knowledge base for company context
+### Conditional Pipeline
 
 ```python
-from tramontane import KnowledgeBase
+from tramontane.skills.composition import ConditionalSkill, SkillPipeline
 
-kb = KnowledgeBase(db_path="gerald_knowledge.db")
-await kb.ingest(sources=["company_docs/*.md", "crm_exports/*.json"])
-
-qualifier = Agent(
-    role="Lead Qualifier",
-    knowledge=kb,
-    knowledge_top_k=3,
+qualify_if_good = ConditionalSkill(
+    skill=email_skill,
+    condition=lambda prev: prev and "score: 8" in prev.output.lower(),
 )
+pipe = SkillPipeline([research_skill, qualify_skill, qualify_if_good])
 ```
 
-### YAML pipeline
+## Pattern 3: Cost Optimization
 
-```yaml
-name: Gerald Lead Gen
-budget_eur: 0.01
-
-agents:
-  researcher:
-    role: Lead Researcher
-    goal: Find and research target companies
-    model: mistral-small-4
-
-  qualifier:
-    role: Lead Qualifier
-    goal: Score leads against ICP
-    model: ministral-3b
-    budget_eur: 0.001
-
-  writer:
-    role: Email Writer
-    goal: Draft personalized cold emails
-    model: mistral-small-4
-    temperature: 0.8
-
-flow: [researcher, qualifier, writer]
-```
-
-## Pattern 3: Cost Optimization Workflow
-
-### Step 1: Tune with FleetTuner
-
+### Step 1: Tune
 ```python
-tuner = FleetTuner()
-result = await tuner.tune(
-    agent=builder,
-    test_prompts=load_test_prompts("prompts.txt"),
-    optimize_for="balanced",
-)
+from tramontane import FleetTuner
+result = await FleetTuner().tune(builder, test_prompts, optimize_for="balanced")
 builder = result.apply(builder)
 ```
 
-### Step 2: Add progressive reasoning
-
+### Step 2: Progressive Reasoning
 ```python
 builder = builder.model_copy(update={
     "reasoning_strategy": "progressive",
@@ -156,28 +135,77 @@ builder = builder.model_copy(update={
 })
 ```
 
-### Step 3: Add cascade as safety net
-
+### Step 3: Cascade Safety Net
 ```python
 builder = builder.model_copy(update={
     "cascade": ["devstral-2", "mistral-large-3"],
 })
 ```
 
-### Step 4: Monitor with telemetry
-
+### Step 4: Monitor
 ```python
+from tramontane import MistralRouter, FleetTelemetry
 router = MistralRouter(telemetry=FleetTelemetry())
-# Run agents through the router
-# Check: tramontane telemetry stats
+# tramontane telemetry stats
 ```
 
-### Step 5: Use parallel execution for independent work
+### Step 5: Adaptive Budget
+```python
+from tramontane import RunContext
+ctx = RunContext(budget_eur=0.05, reallocation="adaptive")
+```
+
+## Pattern 4: RAG Support Agent
 
 ```python
-from tramontane import ParallelGroup
+from tramontane import Agent, KnowledgeBase, TramontaneMemory
 
-group = ParallelGroup([designer, architect])
-result = await group.run(input_text="Design a bakery website")
-# Both run concurrently — half the wall-clock time
+kb = KnowledgeBase(db_path="support_kb.db")
+await kb.ingest(sources=["docs/*.md", "faq/*.txt"])
+
+memory = TramontaneMemory(db_path="support_memory.db")
+
+support = Agent(
+    role="Support Agent",
+    goal="Answer customer questions accurately",
+    backstory="Expert support engineer",
+    knowledge=kb,
+    knowledge_top_k=5,
+    tramontane_memory=memory,
+    memory_tools=True,
+    auto_extract_facts=True,
+)
+
+result = await support.run("How do I configure SSO?")
+# 1. Retrieves top-5 chunks from knowledge base
+# 2. Generates answer grounded in documentation
+# 3. Auto-extracts any new facts from the conversation
+```
+
+## Pattern 5: Multi-Skill Orchestrator
+
+```python
+from tramontane import SkillRegistry, SkillPipeline
+from tramontane.skills.composition import ParallelSkills, SkillPersona
+
+registry = SkillRegistry()
+# Register domain skills
+registry.register(ResearchSkill())
+registry.register(AnalysisSkill())
+registry.register(ReportSkill())
+
+# Discovery
+task = "Analyze Scaleway's competitive position"
+matches = registry.search(task)
+
+# Sequential execution
+pipe = SkillPipeline(
+    [matches[0][0], matches[1][0]],
+    persona=SkillPersona(
+        name="Gerald",
+        description="EU business agent",
+        instructions="Be data-driven. Think in EUR.",
+    ),
+)
+results = await pipe.run(task)
 ```

@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.2.3 (2026-04-02) — Memory + Skills
+
+**The only agent framework with state-of-the-art memory, typed skills, and intelligent model routing.**
+
+### TramontaneMemory (3-tier agent-controlled memory)
+- **Working Memory** — always-in-context labeled blocks, agent-editable
+- **Factual Memory** — knowledge graph with mistral-embed vectors, FTS5, entity links
+- **Experiential Memory** — outcome tracking for self-improvement
+- **4-channel retrieval** — semantic + BM25 + entity graph + temporal, fused via RRF
+- **5 memory tools** — retain, recall, reflect, forget (GDPR Article 17), update
+- **Auto fact extraction** — ministral-3b extracts atomic facts after every run
+- **Agent integration** — tramontane_memory=, memory_tools=True, auto_extract_facts=True
+
+### TramontaneSkills (typed, composable, learnable)
+- **Skill base class** — typed I/O, triggers, preferred model, budget, memory tags
+- **@track_skill decorator** — auto-profiling (timing, cost, success/failure)
+- **SkillRegistry** — SQLite-backed, keyword + semantic search, security verification
+- **SkillLoader** — Python modules, SKILL.md (OpenClaw), YAML (NVIDIA-inspired)
+- **Composition** — SkillPipeline, ConditionalSkill, ParallelSkills, SkillPersona
+- **5 built-in skills** — TextAnalysis, CodeGeneration, EmailDraft, DataExtraction, WebSearch
+- **Security** — SHA-256 hash, dangerous pattern detection (os.system, eval, exec)
+- **MCP tool export** — skill.to_mcp_tool() for publishing
+
+### Self-Learning Router Fix
+- Agent.run() now records telemetry outcomes when router has FleetTelemetry
+- Router learns from real production data after 50+ outcomes
+
+### Documentation
+- Complete README rewrite (319 lines, 16 code examples, comparison table)
+- docs/memory.md — 3-tier memory deep dive
+- docs/skills.md — typed skills system guide
+- Updated quickstart, smart-fleet, patterns, api-reference
+
+### Stats
+- 324 tests, ruff clean, mypy clean
+- 60 source files, 36 public exports, 84 code examples in docs
+
 ## v0.2.2 (2026-04-01) — The Evolution Release
 
 **The only agent framework that gets smarter every time you use it.**

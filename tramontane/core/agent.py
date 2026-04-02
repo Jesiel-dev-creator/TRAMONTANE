@@ -260,6 +260,20 @@ class Agent(BaseModel):
     knowledge_top_k: int = 5
     """Number of top chunks to retrieve from knowledge base."""
 
+    # ── TRAMONTANE MEMORY (3-tier) ──────────────────────────────────
+    tramontane_memory: Any | None = None
+    """TramontaneMemory instance for 3-tier memory system."""
+    memory_tools: bool = False
+    """Add retain/recall/reflect/forget/update tools to this agent."""
+    auto_extract_facts: bool = False
+    """Auto-extract facts from agent output after run()."""
+    working_memory_blocks: list[str] = Field(default_factory=list)
+    """Labels of working memory blocks to inject into system prompt."""
+
+    # ── SKILLS ───────────────────────────────────────────────────────
+    skills: list[Any] = Field(default_factory=list)
+    """Skills available to this agent for orchestrator discovery."""
+
     # ── COST CONTROL (Tramontane-unique) ─────────────────────────────
     budget_eur: float | None = None
 
@@ -587,8 +601,19 @@ class Agent(BaseModel):
         model_info = MISTRAL_MODELS.get(model_alias)
         api_model = model_info.api_id if model_info else model_alias
 
-        # 2. Build messages (with optional RAG context)
+        # 2. Build messages (with optional RAG + memory context)
         sys_prompt = self.system_prompt()
+
+        # Working memory injection
+        if self.tramontane_memory is not None and self.working_memory_blocks:
+            from tramontane.memory.working import WorkingMemoryManager
+
+            wm = WorkingMemoryManager(self.tramontane_memory._conn)
+            wm_text = wm.format_for_prompt(self.role)
+            if wm_text:
+                sys_prompt += f"\n\n{wm_text}"
+
+        # Knowledge base RAG
         if self.knowledge is not None:
             retrieval = await self.knowledge.retrieve(
                 input_text, top_k=self.knowledge_top_k,
@@ -647,11 +672,16 @@ class Agent(BaseModel):
         if self.output_schema is not None:
             chat_kwargs["response_format"] = {"type": "json_object"}
 
-        # Tools
+        # Tools (including memory tools if enabled)
         callable_tools = [t for t in self.tools if callable(t)]
-        if self.tools:
+        if self.memory_tools and self.tramontane_memory is not None:
+            from tramontane.memory.tools import create_memory_tools
+
+            callable_tools = create_memory_tools(self.tramontane_memory) + callable_tools
+        all_tools = callable_tools + [t for t in self.tools if not callable(t)]
+        if all_tools:
             chat_kwargs["tools"] = [
-                _function_to_tool(t) if callable(t) else t for t in self.tools
+                _function_to_tool(t) if callable(t) else t for t in all_tools
             ]
             chat_kwargs["tool_choice"] = self.tool_choice or "auto"
             chat_kwargs["parallel_tool_calls"] = self.parallel_tool_calls
@@ -766,7 +796,7 @@ class Agent(BaseModel):
             except Exception as exc:
                 logger.warning("Output schema validation failed: %s", exc)
 
-        return AgentResult(
+        agent_result = AgentResult(
             output=output_text,
             model_used=model_alias,
             input_tokens=input_tokens,
@@ -777,6 +807,38 @@ class Agent(BaseModel):
             reasoning_used=self.reasoning,
             parsed_output=parsed_output,
         )
+
+        # Auto-extract facts from output
+        if self.auto_extract_facts and self.tramontane_memory is not None and output_text:
+            try:
+                ids = await self.tramontane_memory.extract_facts(output_text, source=self.role)
+                logger.info("Extracted %d facts from %s output", len(ids), self.role)
+            except Exception as exc:
+                logger.warning("Auto fact extraction failed: %s", exc)
+
+        # Record telemetry for self-learning router
+        if router and hasattr(router, "_telemetry") and router._telemetry:
+            from tramontane.router.telemetry import RoutingOutcome
+
+            task_type = "general"
+            complexity = 3
+            if routing_decision and hasattr(routing_decision, "classification"):
+                task_type = routing_decision.classification.task_type
+                complexity = routing_decision.classification.complexity
+
+            router._telemetry.record(RoutingOutcome(
+                task_type=task_type,
+                complexity=complexity,
+                model_used=agent_result.model_used,
+                reasoning_effort=effective_effort if effective_effort else None,
+                success=bool(agent_result.output),
+                cost_eur=agent_result.cost_eur,
+                latency_s=agent_result.duration_seconds,
+                output_tokens=agent_result.output_tokens,
+                agent_role=self.role,
+            ))
+
+        return agent_result
 
     async def run_stream(
         self,

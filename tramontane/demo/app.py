@@ -193,7 +193,7 @@ def simulate_task(
         goal="Process the task",
         backstory="General purpose agent",
         model=config.default_model,
-        reasoning_effort=config.default_reasoning_effort,
+        reasoning_effort=config.default_reasoning_effort,  # type: ignore[arg-type]
     )
 
     sim = simulate_agent(agent, task)

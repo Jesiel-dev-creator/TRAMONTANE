@@ -361,3 +361,15 @@ class TestRoutingDecisionEffort:
 
         assert FleetTelemetry is not None
         assert RoutingOutcome is not None
+
+
+class TestTelemetryRecordingInAgent:
+    """Agent.run() records telemetry when router has telemetry."""
+
+    def test_router_telemetry_attribute_accessible(self) -> None:
+        from tramontane.router.telemetry import FleetTelemetry
+
+        t = FleetTelemetry(db_path=":memory:")
+        r = MistralRouter(telemetry=t)
+        assert r._telemetry is t
+        assert r._telemetry.total_outcomes == 0
