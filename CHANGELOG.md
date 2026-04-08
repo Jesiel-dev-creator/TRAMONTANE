@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.2.4 (2026-04-07) — ArkhosAI Battle-Test Fixes
+
+**Bugs Gerald and ArkhosAI found during real-world testing.**
+
+### Added
+- **`Agent.run(system_prompt=...)`** — optional override parameter on `run()` and
+  `run_stream()`. When set, replaces the auto-built role/goal/backstory prompt
+  for that call only. Gerald-style pattern works cleanly:
+  `await agent.run(input_text, system_prompt=_QUALIFICATION_PROMPT)`.
+
+### Fixed
+- **Silent degradation on unknown model alias** — `Agent._run_once()` now raises
+  `ModelNotAvailableError` with a clear message when an alias isn't in
+  `MISTRAL_MODELS` (e.g. passing `mistral-small-latest` instead of `mistral-small`).
+  `run_stream()` yields an equivalent error event. Previously these calls
+  silently degraded to 1-file output with `cost_eur=0`.
+- **Aggressive pre-call budget check** — tolerance bumped from 2x to 5x as
+  a new class constant `_BUDGET_TOLERANCE`. The pre-call estimate is now a
+  soft runaway guard; actual enforcement stays post-call via Pipeline /
+  RunContext with real token counts.
+- **Code-aware cost estimation** — `_estimate_call_cost()` detects code models
+  (`devstral-*`, anything with `code`/`swe` strengths) and uses a 2.0x output
+  multiplier instead of 0.8x. Output is capped at `max_output_tokens/2`.
+  Prevents ArkhosAI's Builder from being blocked before it can generate.
+- **Self-learning router telemetry** — `Agent.run()` now records a
+  `RoutingOutcome` to the router's telemetry (when set) after every
+  execution. Previously telemetry recorded 0 outcomes even with
+  `router = MistralRouter(telemetry=FleetTelemetry())`.
+
+### Validated
+- 329 unit tests passing (323 → 329, +6 new)
+- ruff clean, mypy clean
+
 ## v0.2.3 (2026-04-02) — Memory + Skills
 
 **The only agent framework with state-of-the-art memory, typed skills, and intelligent model routing.**

@@ -325,6 +325,13 @@ class Agent(BaseModel):
             + (output_tokens / 1_000_000) * model_info.cost_per_1m_output_eur
         )
 
+    #: Soft guard tolerance — reject only if estimate exceeds
+    #: remaining budget by this multiple. Pre-call estimation is
+    #: intentionally rough; actual costs are enforced post-call by
+    #: Pipeline / RunContext. Set high (5x) so code-gen agents with
+    #: tight budgets aren't blocked before they can run.
+    _BUDGET_TOLERANCE: float = 5.0
+
     def check_budget(
         self,
         estimated_cost: float,
@@ -333,8 +340,9 @@ class Agent(BaseModel):
         """Raise BudgetExceededError if estimated cost far exceeds budget.
 
         Pre-call estimation is rough — only reject if the estimate is
-        more than 2x over the remaining budget.  Actual cost is always
-        checked post-call by Pipeline (the hard guard).
+        more than 5x over the remaining budget. This is a soft guard
+        against obvious runaway; real enforcement is post-call via
+        actual token counts.
 
         Args:
             estimated_cost: The projected cost of the next call.
@@ -342,9 +350,7 @@ class Agent(BaseModel):
         """
         if self.budget_eur is not None:
             budget_remaining = self.budget_eur - spent_eur
-            # Only reject if estimate is more than 2x over remaining budget
-            # (estimation is rough — don't block affordable calls)
-            if estimated_cost > budget_remaining * 2.0:
+            if estimated_cost > budget_remaining * self._BUDGET_TOLERANCE:
                 raise BudgetExceededError(
                     budget_eur=self.budget_eur,
                     spent_eur=spent_eur,
@@ -362,7 +368,7 @@ class Agent(BaseModel):
             self.check_budget(estimated_cost, spent_eur=spent_eur)
             return
         budget_remaining = budget_override - spent_eur
-        if estimated_cost > budget_remaining * 2.0:
+        if estimated_cost > budget_remaining * self._BUDGET_TOLERANCE:
             raise BudgetExceededError(
                 budget_eur=budget_override,
                 spent_eur=spent_eur,
@@ -427,6 +433,7 @@ class Agent(BaseModel):
         spent_eur: float = 0.0,
         run_context: RunContext | None = None,
         context: str | None = None,
+        system_prompt: str | None = None,
     ) -> AgentResult:
         """Execute this agent: resolve model, call Mistral, return result.
 
@@ -442,6 +449,8 @@ class Agent(BaseModel):
             spent_eur: Total already spent by Pipeline (for budget check).
             run_context: Shared RunContext for multi-agent cost tracking.
             context: Dynamic per-call context appended to system prompt.
+            system_prompt: Override the system prompt for this call only.
+                When set, replaces the auto-built role/goal/backstory prompt.
 
         Returns:
             AgentResult with output, model, tokens, cost, duration.
@@ -495,6 +504,7 @@ class Agent(BaseModel):
                         run_id=run_id,
                         spent_eur=_spent,
                         context=context,
+                        system_prompt=system_prompt,
                         effort_override=effort,
                         model_override=model_alias,
                         max_tokens_override=max_tok,
@@ -520,6 +530,7 @@ class Agent(BaseModel):
                     run_id=run_id,
                     spent_eur=_spent,
                     context=context,
+                    system_prompt=system_prompt,
                     model_override=model_alias,
                     max_tokens_override=max_tok,
                     budget_override=effective_budget,
@@ -565,6 +576,7 @@ class Agent(BaseModel):
         run_id: str | None = None,
         spent_eur: float = 0.0,
         context: str | None = None,
+        system_prompt: str | None = None,
         effort_override: str | None = None,
         model_override: str | None = None,
         max_tokens_override: int | None = None,
@@ -599,10 +611,24 @@ class Agent(BaseModel):
             model_alias = routing_decision.primary_model
 
         model_info = MISTRAL_MODELS.get(model_alias)
+        if model_info is None and model_alias != "auto":
+            from tramontane.core.exceptions import ModelNotAvailableError
+
+            known = sorted(MISTRAL_MODELS.keys())
+            raise ModelNotAvailableError(
+                model=model_alias,
+                reason=(
+                    f"Unknown Tramontane alias. Use one of: {', '.join(known)}. "
+                    "Note: pass the short alias (e.g. 'mistral-small'), "
+                    "NOT the Mistral api_id (e.g. 'mistral-small-latest'). "
+                    "Unknown aliases silently degrade to 1-file output "
+                    "with cost_eur=0."
+                ),
+            )
         api_model = model_info.api_id if model_info else model_alias
 
         # 2. Build messages (with optional RAG + memory context)
-        sys_prompt = self.system_prompt()
+        sys_prompt = system_prompt if system_prompt is not None else self.system_prompt()
 
         # Working memory injection
         if self.tramontane_memory is not None and self.working_memory_blocks:
@@ -850,6 +876,7 @@ class Agent(BaseModel):
         spent_eur: float = 0.0,
         run_context: RunContext | None = None,
         context: str | None = None,
+        system_prompt: str | None = None,
         on_pattern: dict[str, Callable[..., Any]] | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Execute this agent with token-by-token streaming.
@@ -928,10 +955,22 @@ class Agent(BaseModel):
                 return
 
         model_info = MISTRAL_MODELS.get(model_alias)
+        if model_info is None and model_alias != "auto":
+            known = sorted(MISTRAL_MODELS.keys())
+            yield StreamEvent(
+                type="error",
+                error=(
+                    f"Unknown Tramontane alias '{model_alias}'. "
+                    f"Use one of: {', '.join(known)}. "
+                    "Note: pass the short alias (e.g. 'mistral-small'), "
+                    "NOT the api_id (e.g. 'mistral-small-latest')."
+                ),
+            )
+            return
         api_model = model_info.api_id if model_info else model_alias
 
         # 2. Build messages (with optional RAG context)
-        sys_prompt = self.system_prompt()
+        sys_prompt = system_prompt if system_prompt is not None else self.system_prompt()
         if self.knowledge is not None:
             retrieval = await self.knowledge.retrieve(
                 input_text, top_k=self.knowledge_top_k,
@@ -1206,23 +1245,39 @@ class Agent(BaseModel):
         """Estimate cost BEFORE making the API call.
 
         Uses character-based token estimation (~3.5 chars/token) plus
-        conservative output multiplier.  This is a soft guard — the
-        real budget enforcement happens post-call with actual token
-        counts accumulated by Pipeline.
+        a task-aware output multiplier. This is a SOFT guard — the real
+        budget enforcement happens post-call with actual token counts
+        accumulated by Pipeline. The pre-call check should NEVER block
+        a call that would actually succeed; it only guards against
+        obvious runaway (10x+ the budget).
         """
         # Input tokens: ~3.5 chars per token for mixed en/fr
         total_chars = sum(len(m["content"]) for m in messages)
         est_input_tokens = total_chars / 3.5
 
-        # Output estimate: 1.2x input for reasoning, 0.8x otherwise
-        # (most outputs are shorter than inputs)
-        output_multiplier = 1.2 if self.reasoning else 0.8
+        # Task-aware output multiplier
+        # Code models typically generate 2-5x the input (whole files)
+        is_code_model = bool(
+            set(model_info.strengths) & {"code", "swe", "all-code-tasks", "complex-swe"}
+        )
+        if is_code_model:
+            output_multiplier = 2.0  # code generation produces large outputs
+        elif self.reasoning:
+            output_multiplier = 1.2
+        else:
+            output_multiplier = 0.8
+
         est_output_tokens = est_input_tokens * output_multiplier
+
+        # Cap at half of max_output_tokens as a sanity ceiling
+        if model_info.max_output_tokens > 0:
+            ceiling = model_info.max_output_tokens / 2
+            est_output_tokens = min(est_output_tokens, ceiling)
 
         input_cost = (est_input_tokens / 1_000_000) * model_info.cost_per_1m_input_eur
         output_cost = (est_output_tokens / 1_000_000) * model_info.cost_per_1m_output_eur
 
-        # Reasoning adds modest overhead (1.1x), not 1.4x
+        # Reasoning adds modest overhead (1.1x)
         reasoning_overhead = 1.1 if self.reasoning else 1.0
         return (input_cost + output_cost) * reasoning_overhead
 

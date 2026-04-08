@@ -1,4 +1,4 @@
-"""TRAMONTANE v0.2.3 — Memory + Skills Demo.
+"""TRAMONTANE v0.2.4 — Memory + Skills Demo.
 
 Four tabs: Router Explorer | Fleet Intelligence | Live Agent | Benchmark
 IP-based rate limiting + global daily budget cap on live calls.
@@ -107,7 +107,7 @@ def record_spend(cost_eur: float) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fleet table (updated for v0.2.3)
+# Fleet table (updated for v0.2.4)
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +168,7 @@ def route_task(
 | **Budget Constrained** | `{decision.budget_constrained}` |
 {downgrade_note}
 ---
-*v0.2.3 \u00b7 OFFLINE mode \u00b7 13 models \u00b7 No API key required*
+*v0.2.4 \u00b7 OFFLINE mode \u00b7 13 models \u00b7 No API key required*
 """
     return md.strip(), get_fleet_df()
 
@@ -309,7 +309,7 @@ footer { display: none !important; }
 # ---------------------------------------------------------------------------
 
 with gr.Blocks(
-    title="TRAMONTANE v0.2.3 \u2014 Memory + Skills",
+    title="TRAMONTANE v0.2.4 \u2014 Memory + Skills",
     theme=gr.themes.Base(
         primary_hue="cyan",
         neutral_hue="slate",
@@ -326,7 +326,7 @@ with gr.Blocks(
 ) as demo:
 
     gr.Markdown(
-        "# TRAMONTANE v0.2.3\n"
+        "# TRAMONTANE v0.2.4\n"
         "**The only agent framework with state-of-the-art memory, "
         "typed skills, and intelligent model routing.**\n\n"
         "13 Mistral models \u00b7 3-tier memory \u00b7 Typed skills \u00b7 "
@@ -430,7 +430,7 @@ with gr.Blocks(
 
     gr.Markdown(
         "---\n"
-        "**TRAMONTANE v0.2.3** \u00b7 MIT License \u00b7 "
+        "**TRAMONTANE v0.2.4** \u00b7 MIT License \u00b7 "
         "Built in Orl\u00e9ans, France by **Bleucommerce SAS** \u00b7 "
         "Powered by **Mistral AI**"
     )

@@ -60,6 +60,90 @@ class TestSystemPrompt:
         assert "step by step" in prompt.lower()
 
 
+class TestSystemPromptOverride:
+    """system_prompt parameter on run() overrides backstory."""
+
+    def test_system_prompt_field_accepted(self) -> None:
+        """Verify system_prompt is a valid kwarg (no TypeError)."""
+        # We can't call run() without API key, but verify the signature works
+        import inspect
+
+        sig = inspect.signature(Agent.run)
+        assert "system_prompt" in sig.parameters
+
+    def test_run_stream_accepts_system_prompt(self) -> None:
+        import inspect
+
+        sig = inspect.signature(Agent.run_stream)
+        assert "system_prompt" in sig.parameters
+
+
+class TestUnknownAliasLoudFailure:
+    """Unknown model aliases should fail loudly, not silently degrade."""
+
+    @pytest.mark.asyncio
+    async def test_run_raises_on_bad_alias(self) -> None:
+        """Agent.run() raises ModelNotAvailableError for api_id-style names."""
+        import os
+
+        from tramontane.core.exceptions import ModelNotAvailableError
+
+        os.environ.setdefault("MISTRAL_API_KEY", "test-dummy-key")
+        a = Agent(
+            role="Builder", goal="Build", backstory="Expert",
+            model="mistral-small-latest",  # api_id, NOT a Tramontane alias
+        )
+        with pytest.raises(ModelNotAvailableError) as exc_info:
+            await a.run("build something")
+        assert "mistral-small-latest" in str(exc_info.value)
+        assert "alias" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_run_stream_yields_error_on_bad_alias(self) -> None:
+        """run_stream() yields an error event for unknown aliases."""
+        import os
+
+        os.environ.setdefault("MISTRAL_API_KEY", "test-dummy-key")
+        a = Agent(
+            role="Builder", goal="Build", backstory="Expert",
+            model="devstral-small-latest",  # api_id, not alias
+        )
+        events = []
+        async for event in a.run_stream("build something"):
+            events.append(event)
+            if event.type == "error":
+                break
+        assert any(e.type == "error" for e in events)
+        err = next(e for e in events if e.type == "error")
+        assert "devstral-small-latest" in err.error
+        assert "alias" in err.error.lower()
+
+
+class TestCodeModelEstimation:
+    """Code models should get higher output estimates."""
+
+    def test_code_model_uses_higher_multiplier(self) -> None:
+        """devstral-small (code model) should estimate more output."""
+        from tramontane.router.models import get_model
+
+        a_general = Agent(role="R", goal="G", backstory="B", model="mistral-small")
+        a_code = Agent(role="R", goal="G", backstory="B", model="devstral-small")
+
+        # Same input length, same per-1M cost (both are 0.10/0.30)
+        messages = [
+            {"role": "system", "content": "x" * 3500},  # 1000 tokens
+            {"role": "user", "content": "build this"},
+        ]
+        cost_general = a_general._estimate_call_cost(
+            messages, get_model("mistral-small"),
+        )
+        cost_code = a_code._estimate_call_cost(
+            messages, get_model("devstral-small"),
+        )
+        # Code model multiplier 2.0 vs general 0.8 → code estimate should be higher
+        assert cost_code > cost_general
+
+
 class TestCostControl:
     """Budget checking and cost estimation."""
 
@@ -73,26 +157,26 @@ class TestCostControl:
         budget_agent.check_budget(0.0005)  # Should not raise
 
     def test_check_budget_over_limit(self, budget_agent: Agent) -> None:
-        # budget_eur=0.001, remaining=0.001, 2x tolerance=0.002
-        # estimate of 0.003 exceeds 0.002 → should raise
+        # budget_eur=0.001, remaining=0.001, 5x tolerance=0.005
+        # estimate of 0.006 exceeds 0.005 → should raise
         with pytest.raises(BudgetExceededError):
-            budget_agent.check_budget(0.003)
+            budget_agent.check_budget(0.006)
 
     def test_check_budget_within_tolerance(self, budget_agent: Agent) -> None:
-        # budget_eur=0.001, remaining=0.001, 2x tolerance=0.002
-        # estimate of 0.0015 is within tolerance → should NOT raise
-        budget_agent.check_budget(0.0015)  # Should not raise
+        # budget_eur=0.001, remaining=0.001, 5x tolerance=0.005
+        # estimate of 0.003 is within tolerance → should NOT raise
+        budget_agent.check_budget(0.003)  # Should not raise
 
     def test_check_budget_with_spent(self, budget_agent: Agent) -> None:
-        # budget_eur=0.001, spent 0.0008, remaining=0.0002, 2x=0.0004
-        # estimate of 0.001 exceeds 0.0004 → should raise
+        # budget_eur=0.001, spent 0.0008, remaining=0.0002, 5x=0.001
+        # estimate of 0.002 exceeds 0.001 → should raise
         with pytest.raises(BudgetExceededError):
-            budget_agent.check_budget(0.001, spent_eur=0.0008)
+            budget_agent.check_budget(0.002, spent_eur=0.0008)
 
     def test_check_budget_with_spent_under_limit(self, budget_agent: Agent) -> None:
-        # budget_eur=0.001, spent 0.0005, remaining=0.0005, 2x=0.001
-        # estimate of 0.0003 is within tolerance → should NOT raise
-        budget_agent.check_budget(0.0003, spent_eur=0.0005)  # Should not raise
+        # budget_eur=0.001, spent 0.0005, remaining=0.0005, 5x=0.0025
+        # estimate of 0.002 is within tolerance → should NOT raise
+        budget_agent.check_budget(0.002, spent_eur=0.0005)  # Should not raise
 
     def test_no_budget_check_passes(self, sample_agent: Agent) -> None:
         # No budget_eur set → check always passes
@@ -172,7 +256,7 @@ class TestBudgetEstimationTolerance:
             {"role": "user", "content": "What is this about?"},
         ]
         est = a._estimate_call_cost(messages, model_info)
-        # Should not raise — estimate should be well within 2x tolerance
+        # Should not raise — estimate should be well within 5x tolerance
         a.check_budget(est, spent_eur=0.0)
 
     def test_very_tight_budget_long_prompt_raises(self) -> None:
